@@ -43,6 +43,29 @@ export default function StickerOverlay({
   
   // Floating status text or hint
   const [stickerHoverId, setStickerHoverId] = useState<string | null>(null);
+  const [selectedStickerId, setSelectedStickerId] = useState<string | null>(null);
+
+  // Click outside to clear selected sticker
+  useEffect(() => {
+    const handleDocumentClick = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target.closest('[data-sticker-id]') ||
+        target.closest('#stickers-palette-panel') ||
+        target.closest('#stickers-palette-toggle-btn')
+      ) {
+        return;
+      }
+      setSelectedStickerId(null);
+    };
+
+    window.addEventListener('mousedown', handleDocumentClick);
+    window.addEventListener('touchstart', handleDocumentClick);
+    return () => {
+      window.removeEventListener('mousedown', handleDocumentClick);
+      window.removeEventListener('touchstart', handleDocumentClick);
+    };
+  }, []);
 
   // Read local file from PC as custom sticker
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -102,11 +125,13 @@ export default function StickerOverlay({
     // Prevent dragging trigger when clicking mini toolbox actions
     if ((e.target as HTMLElement).closest('.sticker-tool')) return;
     e.preventDefault();
+    setSelectedStickerId(stickerId);
     startDrag(stickerId, e.clientX, e.clientY, stickerX, stickerY);
   };
 
   const handleTouchStart = (stickerId: string, stickerX: number, stickerY: number, e: React.TouchEvent) => {
     if ((e.target as HTMLElement).closest('.sticker-tool')) return;
+    setSelectedStickerId(stickerId);
     const touch = e.touches[0];
     startDrag(stickerId, touch.clientX, touch.clientY, stickerX, stickerY);
   };
@@ -166,6 +191,9 @@ export default function StickerOverlay({
   const adjustSticker = (id: string, action: 'scale-up' | 'scale-down' | 'rotate' | 'delete') => {
     if (action === 'delete') {
       onStickersChange(stickers.filter(s => s.id !== id));
+      if (selectedStickerId === id) {
+        setSelectedStickerId(null);
+      }
       return;
     }
     onStickersChange(stickers.map((st) => {
@@ -189,13 +217,16 @@ export default function StickerOverlay({
       >
         {stickers.map((sticker) => {
           const isSelectedDrag = sticker.id === activeDragId;
-          const isHovered = sticker.id === stickerHoverId;
+          const isSelected = sticker.id === selectedStickerId;
+          const isHovered = sticker.id === stickerHoverId || isSelected;
           
           return (
             <div
               key={sticker.id}
+              data-sticker-id={sticker.id}
               onMouseEnter={() => setStickerHoverId(sticker.id)}
               onMouseLeave={() => setStickerHoverId(null)}
+              onMouseDown={() => setSelectedStickerId(sticker.id)}
               className="absolute pointer-events-auto group touch-none"
               style={{
                 left: sticker.x,
@@ -209,12 +240,14 @@ export default function StickerOverlay({
               <div 
                 onMouseDown={(e) => handleMouseDown(sticker.id, sticker.x, sticker.y, e)}
                 onTouchStart={(e) => handleTouchStart(sticker.id, sticker.x, sticker.y, e)}
-                className={`p-3 rounded-2xl cursor-grab active:cursor-grabbing relative flex items-center justify-center min-w-12 min-h-12 transition-all duration-150 select-none ${
+                className={`p-3.5 rounded-2xl cursor-grab active:cursor-grabbing relative flex items-center justify-center min-w-14 min-h-14 transition-all duration-150 select-none ${
                   isSelectedDrag 
                     ? 'border-2 border-indigo-400 bg-indigo-50/10 shadow-lg scale-105' 
-                    : isHovered 
-                      ? 'border-2 border-rose-400 bg-white/40 dark:bg-indigo-950/20 shadow-md scale-102' 
-                      : 'border-0 border-transparent bg-transparent'
+                    : isSelected
+                      ? 'border-2 border-indigo-500 bg-indigo-50/20 dark:bg-indigo-950/30'
+                      : isHovered 
+                        ? 'border-2 border-rose-450 bg-white/60 dark:bg-indigo-950/30' 
+                        : 'border-0 border-transparent bg-transparent'
                 }`}
               >
                 {/* Sticker content */}
