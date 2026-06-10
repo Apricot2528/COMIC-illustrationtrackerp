@@ -1,0 +1,6 @@
+{
+  "name": "Manga & Illust Tracker",
+  "description": "イラストやマンガの制作工程（ネーム、下絵、線画、仕上げ等）の詳細な進捗をページごとに管理し、Googleカレンダーと締切りや打ち合わせを連携表示、可愛いテーマカラー設定も備えたアプリ。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
