@@ -94,7 +94,7 @@ export default function App() {
   const [activeTheme, setActiveTheme] = useState<ThemeConfig>(THEMES[0]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>({
-    clientId: '',
+    clientId: '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
     apiKey: '',
     calendarId: 'primary',
     accessToken: null,
@@ -256,7 +256,14 @@ export default function App() {
     const storedCalStr = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
     if (storedCalStr) {
       try {
-        setCalendarSettings(JSON.parse(storedCalStr));
+        const parsed = JSON.parse(storedCalStr);
+        setCalendarSettings({
+          clientId: parsed.clientId || '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
+          apiKey: parsed.apiKey || '',
+          calendarId: parsed.calendarId || 'primary',
+          accessToken: parsed.accessToken || null,
+          tokenExpiry: parsed.tokenExpiry || null
+        });
       } catch (e) {
         console.error('Failed to parse calendar settings', e);
       }
@@ -1514,6 +1521,7 @@ export default function App() {
                     onSyncTask={handleManualSync}
                     onSelectTaskId={setSelectedTaskId}
                     customStyle={customStyle}
+                    onCalendarSettingsChange={handleCalendarSettingsChange}
                   />
                 </div>
 

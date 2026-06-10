@@ -8,6 +8,7 @@ import { ThemeConfig, CalendarSettings, CustomStyleConfig } from '../types';
 import { THEMES } from '../data/themes';
 import { startGoogleAuth } from '../utils/calendar';
 import { X, Settings, Sparkles, AlertCircle, RefreshCw, Key, HelpCircle, LogOut, Sliders, Upload, Image as ImageIcon } from 'lucide-react';
+import { ImageCropper } from './ImageCropper';
 
 
 interface SettingModalProps {
@@ -59,6 +60,7 @@ export default function SettingModal({
   const [showEmojis, setShowEmojis] = useState(customStyle.showEmojis);
   const [showStickers, setShowStickers] = useState(customStyle.showStickers !== false);
   const [darkMode, setDarkMode] = useState(!!customStyle.darkMode);
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
  
   // Hidden color pickers refs
   const accentColorRef = useRef<HTMLInputElement>(null);
@@ -170,22 +172,29 @@ export default function SettingModal({
   const handleLocalFileChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'header' | 'cat') => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 1024 * 1024 * 1.5) {
-        alert('恐れ入りますが、画像ストレージ制限のためファイルサイズは1.5MB以下にしてください💧');
+      const isHeader = field === 'header';
+      // Header image supports up to 10MB because our Canvas Cropper will process and compress it
+      const maxSize = isHeader ? 1024 * 1024 * 10 : 1024 * 1024 * 1.5;
+      if (file.size > maxSize) {
+        alert(isHeader 
+          ? '画像ファイルは10MB以下のものを選択してください💧' 
+          : '恐れ入りますが、画像ストレージ制限のためファイルサイズは1.5MB以下にしてください💧'
+        );
         return;
       }
       const reader = new FileReader();
       reader.onload = (event) => {
         if (event.target?.result) {
           const base64Url = event.target.result as string;
-          if (field === 'header') {
-            setHeaderBgUrl(base64Url);
+          if (isHeader) {
+            setCropImageSrc(base64Url);
           } else {
             setDeadlineCatUrl(base64Url);
           }
         }
       };
       reader.readAsDataURL(file);
+      e.target.value = ''; // Reset input to detect any brand new selection
     }
   };
 
@@ -864,6 +873,28 @@ export default function SettingModal({
           )}
 
           <div className="space-y-3">
+            {/* One-click quick connection prompt if Client ID is already entered */}
+            {clientId && !calendarSettings.accessToken && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-center leading-relaxed space-y-2.5 my-1 hover:bg-amber-500/15 transition duration-150 rounded-2xl shadow-xs">
+                <div className="flex flex-col items-center gap-1">
+                  <Sparkles className="w-4.5 h-4.5 text-amber-500 animate-spin-slow" />
+                  <p className="text-xs font-black text-amber-700 dark:text-amber-300">
+                    ⚡ クライアントIDは設定済みです！
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-350 leading-tight">
+                    ワンクリックで直ちにGoogleカレンダーと安全に認証連携できます。✨
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  className="py-1.5 px-3 text-[11px] font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-xl cursor-pointer duration-155 shadow-xs flex items-center justify-center gap-1.5 w-full transform hover:scale-[1.01] active:scale-[0.99]"
+                >
+                  ⚡ ワンクリックでカレンダー接続 🔑
+                </button>
+              </div>
+            )}
+
             <div>
               <label className="block text-[11px] font-medium text-slate-400 mb-1">
                 Google OAuth クライアント ID
@@ -1021,6 +1052,21 @@ export default function SettingModal({
           </button>
         </div>
       </div>
+
+      {/* Embedded interactive image crop module */}
+      {cropImageSrc && (
+        <ImageCropper
+          imageSrc={cropImageSrc}
+          isDark={isDark}
+          onCropComplete={(croppedBase64) => {
+            setHeaderBgUrl(croppedBase64);
+            setCropImageSrc(null);
+          }}
+          onCancel={() => {
+            setCropImageSrc(null);
+          }}
+        />
+      )}
     </div>
   );
 }
