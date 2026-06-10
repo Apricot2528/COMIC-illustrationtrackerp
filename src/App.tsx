@@ -1103,9 +1103,9 @@ export default function App() {
               )}
               <div className="text-center sm:text-left">
                 <h1 className={`text-2xl font-black font-sans tracking-tight leading-none ${isDark ? 'text-indigo-50' : 'text-slate-800'} flex items-center justify-center sm:justify-start gap-1.5`}>
-                  <span className="group-hover:opacity-80 transition duration-200">お絵描き進捗マン！</span>
+                  <span className="group-hover:opacity-80 transition duration-200">作業進捗tracker</span>
                   <span className={`text-white font-extrabold text-sm border-2 px-1.5 rounded-lg rotate-3 inline-block transition shrink-0 duration-200 ${customStyle.useCustomColor ? 'custom-primary-bg border-transparent' : 'bg-rose-500 border-rose-400/30'}`}>
-                    Manga & Illust
+                    PRO
                   </span>
                 </h1>
                 <p className={`text-[11px] mt-1.5 font-medium opacity-80 ${isDark ? 'text-indigo-300' : 'text-slate-500'} flex items-center gap-1`}>

@@ -135,7 +135,7 @@ export async function syncDeadlineToGoogleCalendar(
     `💰 入金状況: ${task.depositStatus === 'paid' ? 'ご入金済み' : task.depositStatus === 'unpaid' ? '未入金' : 'なし（不要）'}\n` +
     `📊 進行度: ${task.type === 'manga' ? `${task.totalPages} ページ管理中` : '1枚イラスト管理中'}\n` +
     `📝 メモ:\n${task.notes || 'なし'}\n\n` +
-    `Powered by Manga & Illust Tracker (Cute & Craft)`;
+    `Powered by 作業進捗tracker`;
 
   // Full day event for Deadline
   const event: CalendarEvent = {
@@ -288,7 +288,7 @@ export async function syncTodoToGoogleCalendar(
   const summary = `📌【TODO】${todo.title}`;
   const description = `💖 とりあえずやること TODO 💖\n` +
     `お絵描き準備・その他雑務：${todo.title}\n\n` +
-    `Manga & Illust Tracker`;
+    `作業進捗tracker`;
 
   const event: CalendarEvent = {
     summary,
