@@ -395,56 +395,126 @@ export default function App() {
     if (!user) return;
 
     const migrateLocalDataToCloud = async () => {
+      let migratedTasksCount = 0;
+      let migratedTodosCount = 0;
+      let migratedStickersCount = 0;
+      let hasMigratedAny = false;
+
       try {
-        // Migrate tasks
+        // 1. Migrate tasks
         const localTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
         if (localTasksStr) {
           const localTasks = JSON.parse(localTasksStr) as Task[];
           if (localTasks.length > 0) {
+            // Get existing cloud task ids
             const tasksQuery = query(collection(db, 'tasks'), where('userId', '==', user.uid));
             const snapshot = await getDocs(tasksQuery);
-            if (snapshot.empty) {
-              for (const task of localTasks) {
+            const cloudTaskIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            for (const task of localTasks) {
+              if (!task.id) continue;
+              // Only migrate if not already in cloud to prevent duplicates
+              if (!cloudTaskIds.has(task.id)) {
                 const taskDocRef = doc(db, 'tasks', task.id);
-                await setDoc(taskDocRef, { ...task, userId: user.uid });
+                // Schema Healing - Ensure all required keys exist to satisfy Firestore Rules isValidTask
+                const healedTask = {
+                  id: task.id,
+                  type: task.type || 'manga',
+                  title: task.title || '無題の作品',
+                  clientName: task.clientName || '',
+                  depositStatus: task.depositStatus || 'unpaid',
+                  deadline: task.deadline || '',
+                  totalPages: typeof task.totalPages === 'number' ? task.totalPages : 1,
+                  steps: task.steps || {},
+                  notes: task.notes || '',
+                  createdAt: task.createdAt || new Date().toISOString(),
+                  userId: user.uid,
+                  calendarEventId: task.calendarEventId || '',
+                  meetingEventId: task.meetingEventId || '',
+                  meetingDate: task.meetingDate || '',
+                  updatedAt: task.updatedAt || new Date().toISOString()
+                };
+                await setDoc(taskDocRef, healedTask);
+                migratedTasksCount++;
+                hasMigratedAny = true;
               }
             }
+            // Clear storage if all processed
+            localStorage.removeItem(LOCAL_STORAGE_TASKS_KEY);
           }
         }
 
-        // Migrate todos
+        // 2. Migrate todos
         const localTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
         if (localTodosStr) {
           const localTodos = JSON.parse(localTodosStr) as Todo[];
           if (localTodos.length > 0) {
+            // Get existing cloud todo ids
             const todosQuery = query(collection(db, 'todos'), where('userId', '==', user.uid));
             const snapshot = await getDocs(todosQuery);
-            if (snapshot.empty) {
-              for (const todo of localTodos) {
+            const cloudTodoIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            for (const todo of localTodos) {
+              if (!todo.id) continue;
+              if (!cloudTodoIds.has(todo.id)) {
                 const todoDocRef = doc(db, 'todos', todo.id);
-                await setDoc(todoDocRef, { ...todo, userId: user.uid });
+                // Schema Healing - Ensure all required keys exist for isValidTodo
+                const healedTodo = {
+                  id: todo.id,
+                  title: todo.title || '無題のタスク',
+                  completed: typeof todo.completed === 'boolean' ? todo.completed : false,
+                  deadline: todo.deadline || '',
+                  calendarEventId: todo.calendarEventId || '',
+                  createdAt: todo.createdAt || new Date().toISOString(),
+                  userId: user.uid,
+                  updatedAt: todo.updatedAt || new Date().toISOString()
+                };
+                await setDoc(todoDocRef, healedTodo);
+                migratedTodosCount++;
+                hasMigratedAny = true;
               }
             }
+            localStorage.removeItem(LOCAL_STORAGE_TODOS_KEY);
           }
         }
 
-        // Migrate stickers
+        // 3. Migrate stickers
         const localStickersStr = localStorage.getItem('manga_illust_stickers_v1');
         if (localStickersStr) {
           const localStickers = JSON.parse(localStickersStr) as PlacedSticker[];
           if (localStickers.length > 0) {
+            // Get existing cloud sticker ids
             const stickersQuery = query(collection(db, 'stickers'), where('userId', '==', user.uid));
             const snapshot = await getDocs(stickersQuery);
-            if (snapshot.empty) {
-              for (const sticker of localStickers) {
+            const cloudStickerIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            for (const sticker of localStickers) {
+              if (!sticker.id) continue;
+              if (!cloudStickerIds.has(sticker.id)) {
                 const stickerDocRef = doc(db, 'stickers', sticker.id);
-                await setDoc(stickerDocRef, { ...sticker, userId: user.uid });
+                // Schema Healing - Ensure all required keys exist for isValidSticker
+                const healedSticker = {
+                  id: sticker.id,
+                  type: sticker.type || 'emoji',
+                  imgUrl: sticker.imgUrl || '',
+                  emoji: sticker.emoji || '',
+                  x: typeof sticker.x === 'number' ? sticker.x : 100,
+                  y: typeof sticker.y === 'number' ? sticker.y : 100,
+                  rotate: typeof sticker.rotate === 'number' ? sticker.rotate : 0,
+                  scale: typeof sticker.scale === 'number' ? sticker.scale : 1,
+                  containerId: sticker.containerId || 'default',
+                  userId: user.uid
+                };
+                await setDoc(stickerDocRef, healedSticker);
+                migratedStickersCount++;
+                hasMigratedAny = true;
               }
             }
+            localStorage.removeItem('manga_illust_stickers_v1');
           }
         }
 
-        // Migrate configuration
+        // 4. Migrate configurations
         const configDocRef = doc(db, 'userConfigs', user.uid);
         const configSnap = await getDoc(configDocRef);
         if (!configSnap.exists()) {
@@ -462,6 +532,10 @@ export default function App() {
             activeThemeId,
             calendarSettings: calendarSettingsParsed
           });
+        }
+
+        if (hasMigratedAny) {
+          alert(`Googleログインに成功しました。ローカルに保存されていたデータをクラウド（Firestore）へ安全に移転・統合しました！✨☁️\n（タスク: ${migratedTasksCount}件、TODO: ${migratedTodosCount}件、ステッカー: ${migratedStickersCount}件）`);
         }
       } catch (e) {
         console.error('Error during cloud migration on login:', e);

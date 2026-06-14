@@ -29,7 +29,7 @@ service cloud.firestore {
         && data.clientName is string && data.clientName.size() <= 100
         && data.depositStatus is string && data.depositStatus.size() <= 20
         && data.deadline is string && data.deadline.size() <= 20
-        && data.totalPages is int
+        && (data.totalPages is int || data.totalPages is number)
         && data.steps is map
         && data.createdAt is string && data.createdAt.size() <= 40
         && data.userId == request.auth.uid;

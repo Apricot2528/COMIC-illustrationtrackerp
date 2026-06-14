@@ -28,6 +28,7 @@ export interface Task {
   meetingEventId?: string;  // ID of the linked Google Calendar event for meetings
   meetingDate?: string;    // Meeting Date/Time (YYYY-MM-DDTHH:mm)
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Todo {
@@ -37,6 +38,7 @@ export interface Todo {
   deadline?: string; // YYYY-MM-DD
   calendarEventId?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface PlacedSticker {
