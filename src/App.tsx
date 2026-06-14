@@ -266,7 +266,7 @@ export default function App() {
       loadedTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setTasks(loadedTasks);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'tasks');
+      console.warn('Firestore real-time sync error for tasks (retrying/reconnecting):', error.message || error);
     });
 
     return () => unsubscribe();
@@ -297,7 +297,7 @@ export default function App() {
       loadedTodos.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setTodos(loadedTodos);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'todos');
+      console.warn('Firestore real-time sync error for todos (retrying/reconnecting):', error.message || error);
     });
 
     return () => unsubscribe();
@@ -327,7 +327,7 @@ export default function App() {
       });
       setStickers(loadedStickers);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'stickers');
+      console.warn('Firestore real-time sync error for stickers (retrying/reconnecting):', error.message || error);
     });
 
     return () => unsubscribe();
@@ -384,7 +384,7 @@ export default function App() {
         }
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `userConfigs/${user.uid}`);
+      console.warn('Firestore real-time sync error for userConfigs (retrying/reconnecting):', error.message || error);
     });
 
     return () => unsubscribe();
@@ -410,6 +410,8 @@ export default function App() {
             const tasksQuery = query(collection(db, 'tasks'), where('userId', '==', user.uid));
             const snapshot = await getDocs(tasksQuery);
             const cloudTaskIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            const migratedTasks: Task[] = [];
 
             for (const task of localTasks) {
               if (!task.id) continue;
@@ -437,7 +439,20 @@ export default function App() {
                 await setDoc(taskDocRef, healedTask);
                 migratedTasksCount++;
                 hasMigratedAny = true;
+                migratedTasks.push(healedTask);
               }
+            }
+            if (migratedTasks.length > 0) {
+              setTasks(prev => {
+                const existingIds = new Set(prev.map(t => t.id));
+                const next = [...prev];
+                for (const t of migratedTasks) {
+                  if (!existingIds.has(t.id)) {
+                    next.push(t);
+                  }
+                }
+                return next.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+              });
             }
             // Clear storage if all processed
             localStorage.removeItem(LOCAL_STORAGE_TASKS_KEY);
@@ -453,6 +468,8 @@ export default function App() {
             const todosQuery = query(collection(db, 'todos'), where('userId', '==', user.uid));
             const snapshot = await getDocs(todosQuery);
             const cloudTodoIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            const migratedTodos: Todo[] = [];
 
             for (const todo of localTodos) {
               if (!todo.id) continue;
@@ -472,7 +489,20 @@ export default function App() {
                 await setDoc(todoDocRef, healedTodo);
                 migratedTodosCount++;
                 hasMigratedAny = true;
+                migratedTodos.push(healedTodo);
               }
+            }
+            if (migratedTodos.length > 0) {
+              setTodos(prev => {
+                const existingIds = new Set(prev.map(t => t.id));
+                const next = [...prev];
+                for (const t of migratedTodos) {
+                  if (!existingIds.has(t.id)) {
+                    next.push(t);
+                  }
+                }
+                return next.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+              });
             }
             localStorage.removeItem(LOCAL_STORAGE_TODOS_KEY);
           }
@@ -487,6 +517,8 @@ export default function App() {
             const stickersQuery = query(collection(db, 'stickers'), where('userId', '==', user.uid));
             const snapshot = await getDocs(stickersQuery);
             const cloudStickerIds = new Set(snapshot.docs.map(doc => doc.id));
+
+            const migratedStickers: PlacedSticker[] = [];
 
             for (const sticker of localStickers) {
               if (!sticker.id) continue;
@@ -508,7 +540,20 @@ export default function App() {
                 await setDoc(stickerDocRef, healedSticker);
                 migratedStickersCount++;
                 hasMigratedAny = true;
+                migratedStickers.push(healedSticker);
               }
+            }
+            if (migratedStickers.length > 0) {
+              setStickers(prev => {
+                const existingIds = new Set(prev.map(s => s.id));
+                const next = [...prev];
+                for (const s of migratedStickers) {
+                  if (!existingIds.has(s.id)) {
+                    next.push(s);
+                  }
+                }
+                return next;
+              });
             }
             localStorage.removeItem('manga_illust_stickers_v1');
           }
@@ -526,12 +571,19 @@ export default function App() {
           const activeThemeId = localThemeId || 'pastel';
           const calendarSettingsParsed = localCalStr ? JSON.parse(localCalStr) : calendarSettings;
 
+          const activeThemeObject = THEMES.find(t => t.id === activeThemeId) || activeTheme;
+
           await setDoc(configDocRef, {
             userId: user.uid,
             customStyle: customStyleParsed,
             activeThemeId,
             calendarSettings: calendarSettingsParsed
           });
+
+          // Instantly update states to reflect local preference config
+          setCustomStyle(prev => ({ ...prev, ...customStyleParsed }));
+          setActiveTheme(activeThemeObject);
+          setCalendarSettings(calendarSettingsParsed);
         }
 
         if (hasMigratedAny) {
@@ -633,13 +685,11 @@ export default function App() {
   };
 
   const handleGoogleSignOut = async () => {
-    if (window.confirm('Googleアカウントからログアウトしますか？\n（オフライン/ローカルデータ表示に切り替わります）')) {
-      try {
-        await signOut(auth);
-        alert('ログアウトしました。🔒');
-      } catch (err) {
-        console.error("Sign out failed:", err);
-      }
+    try {
+      await signOut(auth);
+      alert('ログアウトしました。🔒');
+    } catch (err) {
+      console.error("Sign out failed:", err);
     }
   };
 
