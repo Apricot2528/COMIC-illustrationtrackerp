@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable global helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Entity validation blueprints
+    function isValidTask(data) {
+      return data.keys().hasAll(['id', 'type', 'title', 'clientName', 'depositStatus', 'deadline', 'totalPages', 'steps', 'createdAt', 'userId'])
+        && data.id is string && data.id.size() <= 128
+        && data.type is string && data.type.size() <= 20
+        && data.title is string && data.title.size() <= 200
+        && data.clientName is string && data.clientName.size() <= 100
+        && data.depositStatus is string && data.depositStatus.size() <= 20
+        && data.deadline is string && data.deadline.size() <= 20
+        && data.totalPages is int
+        && data.steps is map
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.userId == request.auth.uid;
+    }
+
+    function isValidTodo(data) {
+      return data.keys().hasAll(['id', 'title', 'completed', 'createdAt', 'userId'])
+        && data.id is string && data.id.size() <= 128
+        && data.title is string && data.title.size() <= 200
+        && data.completed is bool
+        && data.createdAt is string && data.createdAt.size() <= 40
+        && data.userId == request.auth.uid;
+    }
+
+    function isValidSticker(data) {
+      return data.keys().hasAll(['id', 'type', 'x', 'y', 'rotate', 'scale', 'containerId', 'userId'])
+        && data.id is string && data.id.size() <= 128
+        && data.type is string && data.type.size() <= 50
+        && data.x is number
+        && data.y is number
+        && data.rotate is number
+        && data.scale is number
+        && data.containerId is string && data.containerId.size() <= 50
+        && data.userId == request.auth.uid;
+    }
+
+    function isValidUserConfig(data) {
+      return data.keys().hasAll(['userId', 'customStyle', 'activeThemeId', 'calendarSettings'])
+         && data.userId == request.auth.uid
+         && data.customStyle is map
+         && data.activeThemeId is string && data.activeThemeId.size() <= 50
+         && data.calendarSettings is map;
+    }
+
+    // Match blocks for collections
+    match /tasks/{taskId} {
+      allow create: if isSignedIn() && isValidId(taskId) && isValidTask(request.resource.data);
+      allow update: if isSignedIn() && isValidId(taskId) && isValidTask(request.resource.data) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(taskId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /todos/{todoId} {
+      allow create: if isSignedIn() && isValidId(todoId) && isValidTodo(request.resource.data);
+      allow update: if isSignedIn() && isValidId(todoId) && isValidTodo(request.resource.data) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(todoId) && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(todoId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /stickers/{stickerId} {
+      allow create: if isSignedIn() && isValidId(stickerId) && isValidSticker(request.resource.data);
+      allow update: if isSignedIn() && isValidId(stickerId) && isValidSticker(request.resource.data) && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(stickerId) && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(stickerId) && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /userConfigs/{userId} {
+      allow create: if isSignedIn() && isOwner(userId) && isValidUserConfig(request.resource.data);
+      allow update: if isSignedIn() && isOwner(userId) && isValidUserConfig(request.resource.data);
+      allow delete: if isSignedIn() && isOwner(userId);
+      allow get: if isSignedIn() && isOwner(userId);
+      allow list: if false; // Queried explicitly by user id document reference
+    }
+  }
+}

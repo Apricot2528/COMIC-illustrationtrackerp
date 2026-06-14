@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "A page-by-page creation progress tracker task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "clientName": { "type": "string" },
+        "depositStatus": { "type": "string" },
+        "deadline": { "type": "string" },
+        "plotDeadline": { "type": "string" },
+        "nameDeadline": { "type": "string" },
+        "lineartDeadline": { "type": "string" },
+        "totalPages": { "type": "number" },
+        "steps": { "type": "object" },
+        "notes": { "type": "string" },
+        "calendarEventId": { "type": "string" },
+        "meetingEventId": { "type": "string" },
+        "meetingDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "userId": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "type", "title", "clientName", "depositStatus", "deadline", "totalPages", "steps", "createdAt", "userId"]
+    },
+    "Todo": {
+      "title": "Todo",
+      "description": "A standalone laundry-list style TODO item.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "deadline": { "type": "string" },
+        "calendarEventId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "userId": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "completed", "createdAt", "userId"]
+    },
+    "PlacedSticker": {
+      "title": "PlacedSticker",
+      "description": "An overlay decorative sticker placed on screens.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "imgUrl": { "type": "string" },
+        "emoji": { "type": "string" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "rotate": { "type": "number" },
+        "scale": { "type": "number" },
+        "containerId": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "type", "x", "y", "rotate", "scale", "containerId", "userId"]
+    },
+    "UserConfig": {
+      "title": "UserConfig",
+      "description": "Custom styles, selected theme, and calendar setup per user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "customStyle": { "type": "object" },
+        "activeThemeId": { "type": "string" },
+        "calendarSettings": { "type": "object" }
+      },
+      "required": ["userId", "customStyle", "activeThemeId"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "User creative tasks progress tracker."
+    },
+    "/todos/{todoId}": {
+      "schema": "Todo",
+      "description": "Simple general todos."
+    },
+    "/stickers/{stickerId}": {
+      "schema": "PlacedSticker",
+      "description": "Placed stickers across screens."
+    },
+    "/userConfigs/{userId}": {
+      "schema": "UserConfig",
+      "description": "User styles and persistent settings configurations."
+    }
+  }
+}

@@ -14,8 +14,13 @@ import CalendarAccordion from './components/CalendarAccordion';
 import StickerOverlay from './components/StickerOverlay';
 import { HeaderClock } from './components/HeaderClock';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Settings, AlertTriangle, Sparkles, BookOpen, Clock, Calendar as CalendarIcon, User, RefreshCw, Heart, Info, Sliders, Moon, Sun, Shuffle, Filter, CheckSquare, Square, Trash, Bell } from 'lucide-react';
+import { Plus, Settings, AlertTriangle, Sparkles, BookOpen, Clock, Calendar as CalendarIcon, User, RefreshCw, Heart, Info, Sliders, Moon, Sun, Shuffle, Filter, CheckSquare, Square, Trash, Bell, LogIn, LogOut } from 'lucide-react';
 import { Todo } from './types';
+
+// Firebase authentication and storage engine
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { collection, query, where, onSnapshot, getDocs, getDoc, setDoc, deleteDoc, doc } from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './utils/firebase';
 
 const LOCAL_STORAGE_TASKS_KEY = 'manga_illust_tasks_v1';
 const LOCAL_STORAGE_TODOS_KEY = 'manga_illust_todos_v1';
@@ -90,6 +95,7 @@ function playAlarmSound() {
 
 export default function App() {
   // --- States ---
+  const [user, setUser] = useState<FirebaseUser | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTheme, setActiveTheme] = useState<ThemeConfig>(THEMES[0]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -184,92 +190,289 @@ export default function App() {
   // --- Draggable Stickers State ---
   const [stickers, setStickers] = useState<PlacedSticker[]>([]);
 
-  const handleStickersChange = (updated: PlacedSticker[]) => {
+  const handleStickersChange = async (updated: PlacedSticker[]) => {
     setStickers(updated);
     localStorage.setItem('manga_illust_stickers_v1', JSON.stringify(updated));
+
+    if (user) {
+      try {
+        const currentStickersInCloud = await getDocs(query(collection(db, 'stickers'), where('userId', '==', user.uid)));
+        const cloudIds = currentStickersInCloud.docs.map(doc => doc.id);
+        const updatedIds = updated.map(st => st.id);
+
+        // Delete removed stickers
+        for (const id of cloudIds) {
+          if (!updatedIds.includes(id)) {
+            await deleteDoc(doc(db, 'stickers', id));
+          }
+        }
+
+        // Save new/existing stickers
+        for (const sticker of updated) {
+          await setDoc(doc(db, 'stickers', sticker.id), { ...sticker, userId: user.uid });
+        }
+      } catch (e) {
+        handleFirestoreError(e, OperationType.WRITE, 'stickers');
+      }
+    }
   };
 
-  // --- Initial loading from LocalStorage ---
+  // --- Google Authentication state observer ---
   useEffect(() => {
-    // -1. Load custom style selections
-    const storedStyleStr = localStorage.getItem(LOCAL_STORAGE_STYLE_KEY);
-    if (storedStyleStr) {
-      try {
-        const parsed = JSON.parse(storedStyleStr);
-        setCustomStyle(prev => ({
-          ...prev,
-          ...parsed
-        }));
-      } catch (e) {
-        console.error('Failed to parse custom styles from localStorage', e);
-      }
-    }
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+    });
+    return () => unsubscribe();
+  }, []);
 
-    // 0. Load todos
-    const storedTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
-    if (storedTodosStr) {
-      try {
-        setTodos(JSON.parse(storedTodosStr) as Todo[]);
-      } catch (e) {
-        console.error('Failed to parse todos from localStorage', e);
-      }
-    }
-
-    // 1. Load tasks
-    const storedTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
-    if (storedTasksStr) {
-      try {
-        const parsed = JSON.parse(storedTasksStr) as Task[];
-        // Auto-heal duplicate, invalid, or missing task IDs from localStorage
-        let modified = false;
-        const usedIds = new Set<string>();
-        const healedTasks = parsed.map((t) => {
-          let healedId = t.id;
-          const isInvalid = !healedId || healedId === 'undefined' || healedId === 'null';
-          if (isInvalid || usedIds.has(healedId)) {
-            healedId = Math.random().toString(36).substring(2, 9);
-            modified = true;
+  // --- Real-time Sync for Tasks ---
+  useEffect(() => {
+    if (!user) {
+      const storedTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
+      if (storedTasksStr) {
+        try {
+          const parsed = JSON.parse(storedTasksStr) as Task[];
+          let modified = false;
+          const usedIds = new Set<string>();
+          const healedTasks = parsed.map((t) => {
+            let healedId = t.id;
+            const isInvalid = !healedId || healedId === 'undefined' || healedId === 'null';
+            if (isInvalid || usedIds.has(healedId)) {
+              healedId = Math.random().toString(36).substring(2, 9);
+              modified = true;
+            }
+            usedIds.add(healedId);
+            return { ...t, id: healedId };
+          });
+          setTasks(healedTasks);
+          if (modified) {
+            localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(healedTasks));
           }
-          usedIds.add(healedId);
-          return { ...t, id: healedId };
-        });
-
-        setTasks(healedTasks);
-        if (modified) {
-          localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(healedTasks));
+        } catch (e) {
+          console.error('Failed to parse tasks from localStorage', e);
         }
-        // By default, start with home (null) active
-        setSelectedTaskId(null);
-      } catch (e) {
-        console.error('Failed to parse tasks from localStorage', e);
+      } else {
+        setTasks([]);
       }
+      return;
     }
 
-    // 2. Load theme
-    const storedThemeId = localStorage.getItem(LOCAL_STORAGE_THEME_KEY);
-    if (storedThemeId) {
-      const match = THEMES.find(t => t.id === storedThemeId);
-      if (match) setActiveTheme(match);
+    const q = query(collection(db, 'tasks'), where('userId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedTasks: Task[] = [];
+      snapshot.forEach((doc) => {
+        loadedTasks.push(doc.data() as Task);
+      });
+      loadedTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setTasks(loadedTasks);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'tasks');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Real-time Sync for Todos ---
+  useEffect(() => {
+    if (!user) {
+      const storedTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
+      if (storedTodosStr) {
+        try {
+          setTodos(JSON.parse(storedTodosStr) as Todo[]);
+        } catch (e) {
+          console.error('Failed to parse todos from localStorage', e);
+        }
+      } else {
+        setTodos([]);
+      }
+      return;
     }
 
-    // 3. Load Calendar credentials
-    const storedCalStr = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
-    if (storedCalStr) {
+    const q = query(collection(db, 'todos'), where('userId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedTodos: Todo[] = [];
+      snapshot.forEach((doc) => {
+        loadedTodos.push(doc.data() as Todo);
+      });
+      loadedTodos.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setTodos(loadedTodos);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'todos');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Real-time Sync for Placed Stickers ---
+  useEffect(() => {
+    if (!user) {
+      const storedStickersStr = localStorage.getItem('manga_illust_stickers_v1');
+      if (storedStickersStr) {
+        try {
+          setStickers(JSON.parse(storedStickersStr) as PlacedSticker[]);
+        } catch (e) {
+          console.error('Failed to parse stickers from localStorage', e);
+        }
+      } else {
+        setStickers([]);
+      }
+      return;
+    }
+
+    const q = query(collection(db, 'stickers'), where('userId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedStickers: PlacedSticker[] = [];
+      snapshot.forEach((doc) => {
+        loadedStickers.push(doc.data() as PlacedSticker);
+      });
+      setStickers(loadedStickers);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'stickers');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- Real-time Sync for User configs ---
+  useEffect(() => {
+    if (!user) {
+      const storedStyleStr = localStorage.getItem(LOCAL_STORAGE_STYLE_KEY);
+      if (storedStyleStr) {
+        try {
+          const parsed = JSON.parse(storedStyleStr);
+          setCustomStyle(prev => ({ ...prev, ...parsed }));
+        } catch (e) {
+          console.error('Failed to parse custom styles from localStorage', e);
+        }
+      }
+      const storedThemeId = localStorage.getItem(LOCAL_STORAGE_THEME_KEY);
+      if (storedThemeId) {
+        const match = THEMES.find(t => t.id === storedThemeId);
+        if (match) setActiveTheme(match);
+      }
+      const storedCalStr = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
+      if (storedCalStr) {
+        try {
+          const parsed = JSON.parse(storedCalStr);
+          setCalendarSettings({
+            clientId: parsed.clientId || '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
+            apiKey: parsed.apiKey || '',
+            calendarId: parsed.calendarId || 'primary',
+            accessToken: parsed.accessToken || null,
+            tokenExpiry: parsed.tokenExpiry || null
+          });
+        } catch (e) {
+          console.error('Failed to parse calendar settings', e);
+        }
+      }
+      return;
+    }
+
+    const configDocRef = doc(db, 'userConfigs', user.uid);
+    const unsubscribe = onSnapshot(configDocRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.customStyle) {
+          setCustomStyle(prev => ({ ...prev, ...data.customStyle }));
+        }
+        if (data.activeThemeId) {
+          const match = THEMES.find(t => t.id === data.activeThemeId);
+          if (match) setActiveTheme(match);
+        }
+        if (data.calendarSettings) {
+          setCalendarSettings(data.calendarSettings);
+        }
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `userConfigs/${user.uid}`);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- One-Time Cloud Migration on Sign-In ---
+  useEffect(() => {
+    if (!user) return;
+
+    const migrateLocalDataToCloud = async () => {
       try {
-        const parsed = JSON.parse(storedCalStr);
-        setCalendarSettings({
-          clientId: parsed.clientId || '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
-          apiKey: parsed.apiKey || '',
-          calendarId: parsed.calendarId || 'primary',
-          accessToken: parsed.accessToken || null,
-          tokenExpiry: parsed.tokenExpiry || null
-        });
-      } catch (e) {
-        console.error('Failed to parse calendar settings', e);
-      }
-    }
+        // Migrate tasks
+        const localTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
+        if (localTasksStr) {
+          const localTasks = JSON.parse(localTasksStr) as Task[];
+          if (localTasks.length > 0) {
+            const tasksQuery = query(collection(db, 'tasks'), where('userId', '==', user.uid));
+            const snapshot = await getDocs(tasksQuery);
+            if (snapshot.empty) {
+              for (const task of localTasks) {
+                const taskDocRef = doc(db, 'tasks', task.id);
+                await setDoc(taskDocRef, { ...task, userId: user.uid });
+              }
+            }
+          }
+        }
 
-    // 4. Handle OAuth tokens on callback
+        // Migrate todos
+        const localTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
+        if (localTodosStr) {
+          const localTodos = JSON.parse(localTodosStr) as Todo[];
+          if (localTodos.length > 0) {
+            const todosQuery = query(collection(db, 'todos'), where('userId', '==', user.uid));
+            const snapshot = await getDocs(todosQuery);
+            if (snapshot.empty) {
+              for (const todo of localTodos) {
+                const todoDocRef = doc(db, 'todos', todo.id);
+                await setDoc(todoDocRef, { ...todo, userId: user.uid });
+              }
+            }
+          }
+        }
+
+        // Migrate stickers
+        const localStickersStr = localStorage.getItem('manga_illust_stickers_v1');
+        if (localStickersStr) {
+          const localStickers = JSON.parse(localStickersStr) as PlacedSticker[];
+          if (localStickers.length > 0) {
+            const stickersQuery = query(collection(db, 'stickers'), where('userId', '==', user.uid));
+            const snapshot = await getDocs(stickersQuery);
+            if (snapshot.empty) {
+              for (const sticker of localStickers) {
+                const stickerDocRef = doc(db, 'stickers', sticker.id);
+                await setDoc(stickerDocRef, { ...sticker, userId: user.uid });
+              }
+            }
+          }
+        }
+
+        // Migrate configuration
+        const configDocRef = doc(db, 'userConfigs', user.uid);
+        const configSnap = await getDoc(configDocRef);
+        if (!configSnap.exists()) {
+          const localStyleStr = localStorage.getItem(LOCAL_STORAGE_STYLE_KEY);
+          const localThemeId = localStorage.getItem(LOCAL_STORAGE_THEME_KEY);
+          const localCalStr = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
+
+          const customStyleParsed = localStyleStr ? JSON.parse(localStyleStr) : customStyle;
+          const activeThemeId = localThemeId || 'pastel';
+          const calendarSettingsParsed = localCalStr ? JSON.parse(localCalStr) : calendarSettings;
+
+          await setDoc(configDocRef, {
+            userId: user.uid,
+            customStyle: customStyleParsed,
+            activeThemeId,
+            calendarSettings: calendarSettingsParsed
+          });
+        }
+      } catch (e) {
+        console.error('Error during cloud migration on login:', e);
+      }
+    };
+
+    migrateLocalDataToCloud();
+  }, [user]);
+
+  // --- Handle Google Calendar Redirect Hash ---
+  useEffect(() => {
     const oauthParsed = parseOAuthHash();
     if (oauthParsed) {
       const storedState = localStorage.getItem('oauth_state');
@@ -286,7 +489,6 @@ export default function App() {
         localStorage.removeItem('oauth_client_id_tmp');
         alert('Googleカレンダーへの連携とサインインに成功しました！✨📅');
       } else {
-        // Fallback merge
         const updated = {
           ...calendarSettings,
           accessToken: oauthParsed.accessToken,
@@ -295,16 +497,6 @@ export default function App() {
         setCalendarSettings(updated);
         localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
         alert('カレンダーに接続しました！📅');
-      }
-    }
-
-    // 5. Load Placed Stickers
-    const storedStickersStr = localStorage.getItem('manga_illust_stickers_v1');
-    if (storedStickersStr) {
-      try {
-        setStickers(JSON.parse(storedStickersStr) as PlacedSticker[]);
-      } catch (e) {
-        console.error('Failed to parse stickers from localStorage', e);
       }
     }
   }, []);
@@ -354,16 +546,65 @@ export default function App() {
   // Make sure to select a valid task when the active task is deleted
   const selectedTask = tasks.find(t => t.id === selectedTaskId) || null;
 
+  // --- Google Sign-In & Sign-Out handlers ---
+  const handleGoogleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      alert('Googleでログインしました！🌸☁️');
+    } catch (err) {
+      console.error("Sign in failed:", err);
+      alert("Googleサインインに失敗しました。詳細: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    if (window.confirm('Googleアカウントからログアウトしますか？\n（オフライン/ローカルデータ表示に切り替わります）')) {
+      try {
+        await signOut(auth);
+        alert('ログアウトしました。🔒');
+      } catch (err) {
+        console.error("Sign out failed:", err);
+      }
+    }
+  };
+
+  // --- Sync user-level configurations to Firestore ---
+  const updateUserConfig = async (
+    style?: CustomStyleConfig,
+    themeId?: string,
+    calSettings?: CalendarSettings
+  ) => {
+    if (!user) return;
+    try {
+      const configDocRef = doc(db, 'userConfigs', user.uid);
+      await setDoc(configDocRef, {
+        userId: user.uid,
+        customStyle: style || customStyle,
+        activeThemeId: themeId || activeTheme.id,
+        calendarSettings: calSettings || calendarSettings
+      }, { merge: true });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `userConfigs/${user.uid}`);
+    }
+  };
+
   // --- Theme Change handler ---
   const handleThemeChange = (theme: ThemeConfig) => {
     setActiveTheme(theme);
     localStorage.setItem(LOCAL_STORAGE_THEME_KEY, theme.id);
+    if (user) {
+      updateUserConfig(undefined, theme.id, undefined);
+    }
   };
 
   // --- Calendar state save ---
   const handleCalendarSettingsChange = (newSettings: CalendarSettings) => {
     setCalendarSettings(newSettings);
     localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(newSettings));
+    if (user) {
+      updateUserConfig(undefined, undefined, newSettings);
+    }
   };
 
   // --- Google Sign-Out ---
@@ -376,12 +617,15 @@ export default function App() {
       };
       setCalendarSettings(reset);
       localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(reset));
+      if (user) {
+        updateUserConfig(undefined, undefined, reset);
+      }
       alert('ログアウトしました。🔒');
     }
   };
 
   // --- Toggle progress step grid cell ---
-  const handleToggleCell = (taskId: string, stepName: string, pageIndex: number) => {
+  const handleToggleCell = async (taskId: string, stepName: string, pageIndex: number) => {
     const updated = tasks.map((t) => {
       if (t.id === taskId) {
         const stepPages = [...(t.steps[stepName] || [])];
@@ -425,6 +669,17 @@ export default function App() {
 
     setTasks(updated);
     localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(updated));
+
+    if (user) {
+      const targetTask = updated.find(t => t.id === taskId);
+      if (targetTask) {
+        try {
+          await setDoc(doc(db, 'tasks', taskId), { ...targetTask, userId: user.uid });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.UPDATE, `tasks/${taskId}`);
+        }
+      }
+    }
   };
 
   // --- Save / Create Task ---
@@ -499,6 +754,15 @@ export default function App() {
     setSelectedTaskId(savedTask.id);
     setEditingTask(null);
 
+    // Save to Cloud Firestore if logged in
+    if (user) {
+      try {
+        await setDoc(doc(db, 'tasks', savedTask.id), { ...savedTask, userId: user.uid });
+      } catch (e) {
+        handleFirestoreError(e, isNew ? OperationType.CREATE : OperationType.UPDATE, `tasks/${savedTask.id}`);
+      }
+    }
+
     // Google Calendarとの非同期連動
     if (calendarSettings.accessToken) {
       alert(isNew ? '新しい制作お仕事を保存しました。Googleカレンダーへの同期登録を行います...✨' : '制作設定を保存しました。カレンダー同期情報を更新しています...♻️');
@@ -547,6 +811,18 @@ export default function App() {
 
       setTasks(finalTasks);
       localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(finalTasks));
+
+      if (user) {
+        const targetTask = finalTasks.find(t => t.id === task.id);
+        if (targetTask) {
+          try {
+            await setDoc(doc(db, 'tasks', task.id), { ...targetTask, userId: user.uid });
+          } catch (e) {
+            handleFirestoreError(e, OperationType.UPDATE, `tasks/${task.id}`);
+          }
+        }
+      }
+
       alert('🟢 Googleカレンダーとの自動登録・同期がすべて完了しました！📅✨');
     } catch (err) {
       console.error(err);
@@ -597,6 +873,14 @@ export default function App() {
     setTasks(filtered);
     localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(filtered));
 
+    if (user) {
+      try {
+        await deleteDoc(doc(db, 'tasks', taskId));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.DELETE, `tasks/${taskId}`);
+      }
+    }
+
     // Deselect
     if (selectedTaskId === taskId) {
       setSelectedTaskId(filtered.length > 0 ? filtered[0].id : null);
@@ -631,10 +915,19 @@ export default function App() {
     const updated = [finalTodo, ...todos];
     setTodos(updated);
     localStorage.setItem(LOCAL_STORAGE_TODOS_KEY, JSON.stringify(updated));
+
+    if (user) {
+      try {
+        await setDoc(doc(db, 'todos', finalTodo.id), { ...finalTodo, userId: user.uid });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.CREATE, `todos/${finalTodo.id}`);
+      }
+    }
+
     alert('「とりあえずやること(TODO)」を追加しました！🌸');
   };
 
-  const handleToggleTodo = (todoId: string) => {
+  const handleToggleTodo = async (todoId: string) => {
     const updated = todos.map((t) => {
       if (t.id === todoId) {
         return {
@@ -647,6 +940,17 @@ export default function App() {
 
     setTodos(updated);
     localStorage.setItem(LOCAL_STORAGE_TODOS_KEY, JSON.stringify(updated));
+
+    if (user) {
+      const targetTodo = updated.find(t => t.id === todoId);
+      if (targetTodo) {
+        try {
+          await setDoc(doc(db, 'todos', todoId), { ...targetTodo, userId: user.uid });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.UPDATE, `todos/${todoId}`);
+        }
+      }
+    }
   };
 
   const handleDeleteTodo = async (todoId: string) => {
@@ -664,6 +968,14 @@ export default function App() {
     const filtered = todos.filter(t => t.id !== todoId);
     setTodos(filtered);
     localStorage.setItem(LOCAL_STORAGE_TODOS_KEY, JSON.stringify(filtered));
+
+    if (user) {
+      try {
+        await deleteDoc(doc(db, 'todos', todoId));
+      } catch (e) {
+        handleFirestoreError(e, OperationType.DELETE, `todos/${todoId}`);
+      }
+    }
   };
 
   const handleSyncTodoEvent = async (todo: Todo) => {
@@ -682,6 +994,18 @@ export default function App() {
         const updated = todos.map(t => t.id === todo.id ? { ...t, calendarEventId: calEventId } : t);
         setTodos(updated);
         localStorage.setItem(LOCAL_STORAGE_TODOS_KEY, JSON.stringify(updated));
+
+        if (user) {
+          const targetTodo = updated.find(t => t.id === todo.id);
+          if (targetTodo) {
+            try {
+              await setDoc(doc(db, 'todos', todo.id), { ...targetTodo, userId: user.uid });
+            } catch (e) {
+              handleFirestoreError(e, OperationType.UPDATE, `todos/${todo.id}`);
+            }
+          }
+        }
+
         alert('🟢 TODOをGoogleカレンダーと連携しました！📅✨');
       }
     } catch (e) {
@@ -1066,6 +1390,34 @@ export default function App() {
 
             {/* Quick action buttons floating elegantly in glassmorphic tray in the banner corner */}
             <div className="absolute bottom-4 right-4 flex items-center gap-2.5 z-10 bg-black/30 dark:bg-black/60 backdrop-blur-md p-2 rounded-2xl border border-white/10 shadow-lg">
+              {/* Google Sign-In or User Profile */}
+              {user ? (
+                <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl bg-white/15 text-white border border-white/10">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} referrerPolicy="no-referrer" alt={user.displayName || ''} className="w-6 h-6 rounded-full border border-white/30" />
+                  ) : (
+                    <User className="w-4 h-4 text-white" />
+                  )}
+                  <span className="text-[11px] font-bold truncate max-w-[80px] hidden sm:inline">{user.displayName || 'ユーザー'}</span>
+                  <button
+                    onClick={handleGoogleSignOut}
+                    className="p-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] cursor-pointer inline-flex items-center gap-0.5 duration-150"
+                    title="ログアウト"
+                  >
+                    <LogOut className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleGoogleSignIn}
+                  className="py-2 px-3 rounded-xl bg-white text-slate-800 hover:bg-slate-100 cursor-pointer shadow-md duration-200 flex items-center gap-1.5 text-[11px] font-black"
+                  title="Googleでサインインしてクラウド同期"
+                >
+                  <LogIn className="w-3.5 h-3.5 text-rose-500" />
+                  <span className="hidden xs:inline">Googleでサインイン</span>
+                </button>
+              )}
+
               {/* Settings button */}
               <button
                 id="open-settings-btn-banner"
@@ -1120,6 +1472,34 @@ export default function App() {
               <div className="px-2.5">
                 <HeaderClock isDark={isDark} />
               </div>
+
+              {/* Google Sign-In or User Profile */}
+              {user ? (
+                <div className={`flex items-center gap-2.5 p-1.5 rounded-2xl border ${isDark ? 'border-indigo-800/60 bg-indigo-950/40 text-indigo-50' : 'border-slate-200 bg-slate-50 text-slate-800'}`}>
+                  {user.photoURL ? (
+                    <img src={user.photoURL} referrerPolicy="no-referrer" alt={user.displayName || ''} className="w-7 h-7 rounded-full border border-indigo-200 dark:border-indigo-800" />
+                  ) : (
+                    <User className="w-5 h-5 text-slate-500" />
+                  )}
+                  <span className="text-xs font-bold truncate max-w-[100px] hidden md:inline">{user.displayName || 'ユーザー'}</span>
+                  <button
+                    onClick={handleGoogleSignOut}
+                    className="py-1.5 px-3 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs cursor-pointer flex items-center gap-1 shadow-sm duration-150"
+                    title="ログアウト"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">ログアウト</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleGoogleSignIn}
+                  className={`py-3 px-4 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 duration-300 transform hover:scale-[1.03] border cursor-pointer border-slate-200 bg-white text-slate-800 dark:bg-slate-900 dark:text-indigo-200 dark:border-indigo-800`}
+                >
+                  <LogIn className="w-4 h-4 text-rose-500" />
+                  <span>Googleでサインイン</span>
+                </button>
+              )}
 
               {/* Setting Button */}
               <button
@@ -1706,6 +2086,9 @@ export default function App() {
           onCustomStyleChange={(updatedStyle) => {
             setCustomStyle(updatedStyle);
             localStorage.setItem(LOCAL_STORAGE_STYLE_KEY, JSON.stringify(updatedStyle));
+            if (user) {
+              updateUserConfig(updatedStyle, undefined, undefined);
+            }
           }}
         />
       )}
