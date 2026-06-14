@@ -96,6 +96,7 @@ function playAlarmSound() {
 export default function App() {
   // --- States ---
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isMigrating, setIsMigrating] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTheme, setActiveTheme] = useState<ThemeConfig>(THEMES[0]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -220,6 +221,41 @@ export default function App() {
   // --- Google Authentication state observer ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        // Prepare migration state if we have local data keys in localStorage
+        const localTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
+        const localTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
+        const localStickersStr = localStorage.getItem('manga_illust_stickers_v1');
+        
+        let hasLocalTasks = false;
+        let hasLocalTodos = false;
+        let hasLocalStickers = false;
+        
+        try {
+          if (localTasksStr) {
+            const parsed = JSON.parse(localTasksStr);
+            hasLocalTasks = Array.isArray(parsed) && parsed.length > 0;
+          }
+        } catch (_) {}
+        
+        try {
+          if (localTodosStr) {
+            const parsed = JSON.parse(localTodosStr);
+            hasLocalTodos = Array.isArray(parsed) && parsed.length > 0;
+          }
+        } catch (_) {}
+        
+        try {
+          if (localStickersStr) {
+            const parsed = JSON.parse(localStickersStr);
+            hasLocalStickers = Array.isArray(parsed) && parsed.length > 0;
+          }
+        } catch (_) {}
+        
+        if (hasLocalTasks || hasLocalTodos || hasLocalStickers) {
+          setIsMigrating(true);
+        }
+      }
       setUser(firebaseUser);
     });
     return () => unsubscribe();
@@ -257,6 +293,8 @@ export default function App() {
       return;
     }
 
+    if (isMigrating) return;
+
     const q = query(collection(db, 'tasks'), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedTasks: Task[] = [];
@@ -270,7 +308,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isMigrating]);
 
   // --- Real-time Sync for Todos ---
   useEffect(() => {
@@ -288,6 +326,8 @@ export default function App() {
       return;
     }
 
+    if (isMigrating) return;
+
     const q = query(collection(db, 'todos'), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedTodos: Todo[] = [];
@@ -301,7 +341,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isMigrating]);
 
   // --- Real-time Sync for Placed Stickers ---
   useEffect(() => {
@@ -319,6 +359,8 @@ export default function App() {
       return;
     }
 
+    if (isMigrating) return;
+
     const q = query(collection(db, 'stickers'), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const loadedStickers: PlacedSticker[] = [];
@@ -331,7 +373,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isMigrating]);
 
   // --- Real-time Sync for User configs ---
   useEffect(() => {
@@ -368,6 +410,8 @@ export default function App() {
       return;
     }
 
+    if (isMigrating) return;
+
     const configDocRef = doc(db, 'userConfigs', user.uid);
     const unsubscribe = onSnapshot(configDocRef, (snap) => {
       if (snap.exists()) {
@@ -388,11 +432,14 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isMigrating]);
 
   // --- One-Time Cloud Migration on Sign-In ---
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setIsMigrating(false);
+      return;
+    }
 
     const migrateLocalDataToCloud = async () => {
       let migratedTasksCount = 0;
@@ -400,9 +447,45 @@ export default function App() {
       let migratedStickersCount = 0;
       let hasMigratedAny = false;
 
+      // Determine if there is indeed any local data
+      const localTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
+      const localTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
+      const localStickersStr = localStorage.getItem('manga_illust_stickers_v1');
+
+      let hasLocalTasks = false;
+      let hasLocalTodos = false;
+      let hasLocalStickers = false;
+
+      try {
+        if (localTasksStr) {
+          const parsed = JSON.parse(localTasksStr);
+          hasLocalTasks = Array.isArray(parsed) && parsed.length > 0;
+        }
+      } catch (_) {}
+
+      try {
+        if (localTodosStr) {
+          const parsed = JSON.parse(localTodosStr);
+          hasLocalTodos = Array.isArray(parsed) && parsed.length > 0;
+        }
+      } catch (_) {}
+
+      try {
+        if (localStickersStr) {
+          const parsed = JSON.parse(localStickersStr);
+          hasLocalStickers = Array.isArray(parsed) && parsed.length > 0;
+        }
+      } catch (_) {}
+
+      if (!hasLocalTasks && !hasLocalTodos && !hasLocalStickers) {
+        setIsMigrating(false);
+        return;
+      }
+
+      setIsMigrating(true);
+
       try {
         // 1. Migrate tasks
-        const localTasksStr = localStorage.getItem(LOCAL_STORAGE_TASKS_KEY);
         if (localTasksStr) {
           const localTasks = JSON.parse(localTasksStr) as Task[];
           if (localTasks.length > 0) {
@@ -460,7 +543,6 @@ export default function App() {
         }
 
         // 2. Migrate todos
-        const localTodosStr = localStorage.getItem(LOCAL_STORAGE_TODOS_KEY);
         if (localTodosStr) {
           const localTodos = JSON.parse(localTodosStr) as Todo[];
           if (localTodos.length > 0) {
@@ -509,7 +591,6 @@ export default function App() {
         }
 
         // 3. Migrate stickers
-        const localStickersStr = localStorage.getItem('manga_illust_stickers_v1');
         if (localStickersStr) {
           const localStickers = JSON.parse(localStickersStr) as PlacedSticker[];
           if (localStickers.length > 0) {
@@ -591,6 +672,8 @@ export default function App() {
         }
       } catch (e) {
         console.error('Error during cloud migration on login:', e);
+      } finally {
+        setIsMigrating(false);
       }
     };
 
@@ -1298,6 +1381,32 @@ export default function App() {
   return (
     <div className={`min-h-screen py-6 px-4 md:px-8 font-sans transition-all duration-300 ${activeTheme.bgClass} ${isDark ? 'text-indigo-150' : 'text-slate-800'}`}>
       
+      {/* データの同期・移行中（一括マイグレーション）オーバーレイ */}
+      {isMigrating && (
+        <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-slate-950/80 text-white backdrop-blur-md">
+          <div className="flex flex-col items-center max-w-sm p-8 text-center bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl animate-fade-in mx-4">
+            {/* Spinning Indicator */}
+            <div className="relative flex items-center justify-center w-20 h-20 mb-6">
+              <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full animate-pulse"></div>
+              <div className="absolute inset-0 border-4 border-transparent border-t-indigo-400 rounded-full animate-spin"></div>
+              <RefreshCw className="w-8 h-8 text-indigo-300 animate-spin" style={{ animationDuration: '3s' }} />
+            </div>
+            
+            <h3 className="mb-3 text-xl font-bold tracking-tight text-white font-sans">
+              クラウドとデータを同期中...
+            </h3>
+            <p className="text-sm leading-relaxed text-slate-300">
+              ローカルで作成した大切なお仕事データ（作品・タスク、TODO、配置ステッカーなど）を、接続されたGoogleアカウントのクラウド環境へ安全に移転・マージしています。
+            </p>
+            
+            <div className="mt-6 flex gap-2 items-center text-xs text-indigo-300 font-mono bg-indigo-950/50 py-2 px-4 rounded-full">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+              <span>Syncing with Cloud...</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Custom primary color style overrides if enabled */}
       {customStyle.useCustomColor && (
         <style dangerouslySetInnerHTML={{__html: `
