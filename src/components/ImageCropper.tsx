@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RotateCw, ZoomIn, ZoomOut, Check, X, Move, Sparkles } from 'lucide-react';
+import { toast } from '../utils/toast';
 
 interface ImageCropperProps {
   imageSrc: string;
@@ -136,7 +136,7 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
         const ctx = tempCanvas.getContext('2d');
 
         if (!ctx) {
-          alert('画像の書き出しに失敗しました。');
+          toast('画像の書き出しに失敗しました。', 'error');
           setIsDownloading(false);
           return;
         }
@@ -170,7 +170,7 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
 
         const cropCtx = cropCanvas.getContext('2d');
         if (!cropCtx) {
-          alert('トリミングに失敗しました。');
+          toast('トリミングに失敗しました。', 'error');
           setIsDownloading(false);
           return;
         }
@@ -195,7 +195,7 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
         onCropComplete(resultBase64);
       } catch (err) {
         console.error('Cropping failure:', err);
-        alert('画像のトリミングプロセスでエラーが発生しました。読み込み制限などに違反していないか確認してください。');
+        toast('画像のトリミングプロセスでエラーが発生しました。読み込み制限などに違反していないか確認してください。', 'error');
       } finally {
         setIsDownloading(false);
       }
@@ -203,38 +203,31 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
   };
 
   return (
-    <div className="fixed inset-0 z-100 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
-      <div 
+    // 元画面を隠す必要があるので地は敷くが、影・ぼかし・角丸は使わない
+    <div className="fixed inset-0 z-100 flex items-center justify-center p-4" style={{ background: '#E7EAE5' }}>
+      <div
         id="image-cropper-box"
-        className={`w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl border ${
-          isDark 
-            ? 'bg-slate-900 border-indigo-750 text-white' 
-            : 'bg-white border-slate-200 text-slate-800'
-        }`}
+        className="w-full max-w-lg overflow-hidden bg-paper"
+        style={{ border: '0.5px solid #262A26', borderRadius: '2px' }}
       >
-        {/* Header bar */}
-        <div className="px-5 py-4 border-b border-slate-100 dark:border-indigo-950/50 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/30">
-          <div className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
-            <h3 className="text-sm font-black dark:text-amber-300 flex items-center gap-1">
-              🎨 プレビュー ＆ 自由トリミング
-            </h3>
-          </div>
-          <button 
-            type="button"
-            onClick={onCancel}
-            className="p-1.5 hover:bg-slate-100 dark:hover:bg-indigo-950/50 rounded-full text-slate-400 dark:text-slate-500 hover:text-rose-500 transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
+        {/* 見出し */}
+        <div className="rule-b rule-b-sumi flex items-baseline justify-between px-5 py-4">
+          <h3 className="mincho text-title leading-none">画像の切り抜き</h3>
+          <button type="button" onClick={onCancel} className="num tap-icon text-body text-hojo" title="閉じる">
+            ×
           </button>
         </div>
 
-        {/* Viewport canvas staging */}
-        <div className="p-4 flex flex-col items-center">
-          <div 
+        <div className="flex flex-col items-center px-5 py-4">
+          <div
             id="crop-viewport"
-            className="relative w-full overflow-hidden rounded-2xl bg-black border border-slate-200 dark:border-indigo-950 shadow-inner group"
-            style={{ width: `${viewportWidth}px`, height: `${viewportHeight}px`, maxWidth: '100%', aspectRatio: `${viewportWidth}/${viewportHeight}` }}
+            className="relative w-full overflow-hidden bg-black"
+            style={{
+              width: `${viewportWidth}px`,
+              height: `${viewportHeight}px`,
+              maxWidth: '100%',
+              aspectRatio: `${viewportWidth}/${viewportHeight}`,
+            }}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUpOrLeave}
@@ -243,100 +236,71 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
             onTouchMove={handleTouchMove}
             onTouchEnd={handleMouseUpOrLeave}
           >
-            {/* Movable image instance */}
             <img
               ref={imageRef}
               src={imageSrc}
-              alt="Cropped visual node"
+              alt=""
               onLoad={handleImageLoad}
               referrerPolicy="no-referrer"
-              className="absolute pointer-events-none select-none max-w-none origin-center"
+              className="pointer-events-none absolute max-w-none origin-center select-none"
               style={{
                 width: imageSize.width ? `${imageSize.width}px` : 'auto',
                 height: imageSize.height ? `${imageSize.height}px` : 'auto',
                 left: `${viewportWidth / 2}px`,
                 top: `${viewportHeight / 2}px`,
                 transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px) scale(${zoom}) rotate(${rotation}deg)`,
-                transformOrigin: '50% 50%'
+                transformOrigin: '50% 50%',
               }}
             />
 
-            {/* Panning cursor hint on hover */}
-            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-30 pointer-events-none transition duration-300">
-              <Move className="w-12 h-12 text-white drop-shadow-md" />
-            </div>
-
-            {/* Glassmorphic SVG viewport layout */}
-            <svg 
-              className="absolute inset-0 w-full h-full pointer-events-none select-none z-10"
+            {/* 切り抜き範囲。破線や光彩は使わず、細い実線で囲うだけ */}
+            <svg
+              className="pointer-events-none absolute inset-0 z-10 h-full w-full select-none"
               viewBox={`0 0 ${viewportWidth} ${viewportHeight}`}
               preserveAspectRatio="xMidYMid meet"
             >
               <defs>
                 <mask id="crop-window-mask">
                   <rect width={viewportWidth} height={viewportHeight} fill="white" />
-                  <rect 
-                    x={cropX} 
-                    y={cropY} 
-                    width={cropW} 
-                    height={cropH} 
-                    rx="12" 
-                    fill="black" 
-                  />
+                  <rect x={cropX} y={cropY} width={cropW} height={cropH} fill="black" />
                 </mask>
               </defs>
-              {/* Outer dimmed regions */}
-              <rect 
-                width={viewportWidth} 
-                height={viewportHeight} 
-                fill="#000000" 
-                fillOpacity="0.72" 
-                mask="url(#crop-window-mask)" 
+              <rect
+                width={viewportWidth}
+                height={viewportHeight}
+                fill="#000000"
+                fillOpacity="0.72"
+                mask="url(#crop-window-mask)"
               />
-              {/* Crop box border highlighted */}
-              <rect 
-                x={cropX} 
-                y={cropY} 
-                width={cropW} 
-                height={cropH} 
-                rx="12" 
-                fill="transparent" 
-                stroke="#6366f1" 
-                strokeWidth="2.5" 
-                strokeDasharray="5 5" 
-                className="drop-shadow-[0_0_4px_rgba(99,102,241,0.5)]"
+              <rect
+                x={cropX}
+                y={cropY}
+                width={cropW}
+                height={cropH}
+                fill="transparent"
+                stroke="#F4F5F3"
+                strokeWidth="1"
               />
             </svg>
 
-            {/* Float hint overlay */}
-            <div className="absolute bottom-2.5 left-0 right-0 text-center pointer-events-none z-20">
-              <span className="bg-black/60 backdrop-blur-md px-3 py-1 rounded-full text-[10px] text-zinc-300 font-bold border border-white/5 shadow-md">
-                🖱️ ドラッグして切り抜く位置を微調整できます
+            <div className="pointer-events-none absolute bottom-2 left-0 right-0 z-20 text-center">
+              <span className="text-note" style={{ color: '#F4F5F3' }}>
+                ドラッグで位置を調整
               </span>
             </div>
           </div>
 
-          {/* Sizing & Slicing Toolsets */}
-          <div className="w-full mt-4 space-y-4">
-            
-            {/* Aspect Ratio Selector */}
-            <div className="space-y-1.5 bg-slate-50/70 dark:bg-indigo-950/20 p-2.5 rounded-2xl border border-slate-100 dark:border-indigo-950/40">
-              <label className="block text-[10px] font-extrabold text-slate-450 dark:text-indigo-400">
-                📐 アスペクト比 (枠線のサイズ) を選ぶ
-              </label>
-              <div className="grid grid-cols-3 gap-2">
+          <div className="mt-4 w-full">
+            {/* 縦横比 */}
+            <div className="rule-b pb-3">
+              <span className="mb-2 block text-note text-hojo">縦横比</span>
+              <div className="flex flex-wrap gap-2">
                 {PRESETS.map((p) => (
                   <button
                     key={p.label}
                     type="button"
                     onClick={() => setAspectRatio(p.ratio)}
-                    className={`py-1.5 px-2 text-[10.5px] font-bold rounded-xl border transition cursor-pointer text-center duration-150 ${
-                      Math.abs(aspectRatio - p.ratio) < 0.01
-                        ? 'bg-indigo-500 text-white border-transparent shadow-xs'
-                        : isDark
-                        ? 'bg-slate-900 border-indigo-950 hover:bg-indigo-950/50 text-slate-350'
-                        : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-600'
-                    }`}
+                    className={`btn ${Math.abs(aspectRatio - p.ratio) < 0.01 ? 'btn-primary' : ''}`}
                   >
                     {p.label}
                   </button>
@@ -344,12 +308,10 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
               </div>
             </div>
 
-            {/* Zoom / Rotate Controls */}
-            <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
-              
-              {/* Zoom slider */}
-              <div className="flex items-center gap-2.5 w-full sm:w-auto flex-1">
-                <ZoomOut className="w-4 h-4 text-slate-400 shrink-0" />
+            {/* 拡大・回転 */}
+            <div className="flex flex-col items-center gap-3 pt-3 sm:flex-row sm:justify-between">
+              <div className="flex w-full flex-1 items-center gap-3 sm:w-auto">
+                <span className="shrink-0 text-note text-hojo">拡大</span>
                 <input
                   type="range"
                   min="1.0"
@@ -357,55 +319,26 @@ export function ImageCropper({ imageSrc, onCropComplete, onCancel, isDark = fals
                   step="0.05"
                   value={zoom}
                   onChange={(e) => setZoom(parseFloat(e.target.value))}
-                  className="w-full h-1.5 bg-slate-200 dark:bg-indigo-900 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-hidden"
+                  className="h-[2px] w-full cursor-pointer appearance-none"
+                  style={{ background: '#D7DAD3', accentColor: '#262A26' }}
                 />
-                <ZoomIn className="w-4 h-4 text-slate-400 shrink-0" />
-                <span className="text-[10px] font-mono text-slate-450 dark:text-slate-400 w-8 text-right shrink-0">
-                  x{zoom.toFixed(2)}
-                </span>
+                <span className="num w-12 shrink-0 text-right text-note text-hojo">×{zoom.toFixed(2)}</span>
               </div>
 
-              {/* Angle rotation */}
-              <button
-                type="button"
-                onClick={handleRotate}
-                className={`py-1.5 px-3 rounded-xl border font-bold text-[10.5px] cursor-pointer flex items-center justify-center gap-1.5 shadow-xs transition duration-150 ${
-                  isDark
-                    ? 'bg-slate-900 hover:bg-indigo-950/40 border-indigo-950 text-slate-200'
-                    : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-650'
-                }`}
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-                <span>90°回転</span>
+              <button type="button" onClick={handleRotate} className="btn shrink-0">
+                90°回転
               </button>
             </div>
-
           </div>
         </div>
 
-        {/* Footer controls */}
-        <div className="px-5 py-4 border-t border-slate-100 dark:border-indigo-950/50 bg-slate-50/50 dark:bg-slate-900/30 flex justify-end gap-2.5">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={isDownloading}
-            className={`py-2 px-4.5 rounded-xl text-xs font-bold transition border cursor-pointer ${
-              isDark
-                ? 'bg-slate-900 hover:bg-indigo-950/40 border-indigo-950 text-slate-200'
-                : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-600'
-            }`}
-          >
-            キャンセル
+        {/* 下部 */}
+        <div className="rule-t rule-t-sumi flex items-center gap-3 px-5 py-4">
+          <button type="button" onClick={handleApplyCrop} disabled={isDownloading} className="btn btn-primary">
+            {isDownloading ? '処理中…' : '切り抜く'}
           </button>
-          
-          <button
-            type="button"
-            onClick={handleApplyCrop}
-            disabled={isDownloading}
-            className="py-2 px-5.5 rounded-xl text-xs font-black text-white bg-indigo-500 hover:bg-indigo-600 active:scale-[0.98] shadow-md transition duration-150 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-          >
-            <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-            <span>{isDownloading ? '処理中...' : 'トリミングを適用 📐'}</span>
+          <button type="button" onClick={onCancel} disabled={isDownloading} className="btn">
+            取消
           </button>
         </div>
       </div>

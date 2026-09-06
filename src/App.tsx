@@ -3,24 +3,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { Task, ThemeConfig, CalendarSettings, TaskType, DepositStatus, PlacedSticker, CustomStyleConfig } from './types';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
+import { Task, ThemeConfig, CalendarSettings, DepositStatus, PlacedSticker, CustomStyleConfig } from './types';
 import { THEMES } from './data/themes';
 import { syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar, CALENDAR_SCOPES } from './utils/calendar';
-import SettingModal from './components/SettingModal';
-import TaskFormModal from './components/TaskFormModal';
 import ProgressTable from './components/ProgressTable';
 import CalendarAccordion from './components/CalendarAccordion';
-import StickerOverlay from './components/StickerOverlay';
 import { HeaderClock } from './components/HeaderClock';
-import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Settings, AlertTriangle, Sparkles, BookOpen, Clock, Calendar as CalendarIcon, User, RefreshCw, Heart, Info, Sliders, Moon, Sun, Shuffle, Filter, CheckSquare, Square, Trash, Bell, LogIn, LogOut } from 'lucide-react';
+import { RefreshCw, Trash } from 'lucide-react';
 import { Todo } from './types';
 
 // Firebase authentication and storage engine
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, where, onSnapshot, getDocs, getDoc, setDoc, deleteDoc, doc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './utils/firebase';
+import { toast } from './utils/toast';
+
+// モーダル類とステッカー層は初期表示に不要なので遅延読み込みにする
+const SettingModal = lazy(() => import('./components/SettingModal'));
+const TaskFormModal = lazy(() => import('./components/TaskFormModal'));
+const StickerOverlay = lazy(() => import('./components/StickerOverlay'));
 
 const LOCAL_STORAGE_TASKS_KEY = 'manga_illust_tasks_v1';
 const LOCAL_STORAGE_TODOS_KEY = 'manga_illust_todos_v1';
@@ -31,35 +33,43 @@ const LOCAL_STORAGE_CAL_KEY = 'manga_illust_calendar_v1';
 const stripToken = (cs: CalendarSettings): CalendarSettings => ({ ...cs, accessToken: null, tokenExpiry: null });
 const LOCAL_STORAGE_STYLE_KEY = 'manga_illust_custom_style_v1';
 
-// Hex color shade/brightness helper
-function adjustColorBrightness(hex: string, percent: number): string {
-  try {
-    if (!hex || hex.length < 7) return hex;
-    let R = parseInt(hex.substring(1, 3), 16);
-    let G = parseInt(hex.substring(3, 5), 16);
-    let B = parseInt(hex.substring(5, 7), 16);
-
-    R = parseInt(((R * (100 + percent)) / 100).toString());
-    G = parseInt(((G * (100 + percent)) / 100).toString());
-    B = parseInt(((B * (100 + percent)) / 100).toString());
-
-    R = R < 255 ? R : 255;
-    G = G < 255 ? G : 255;
-    B = B < 255 ? B : 255;
-
-    R = R > 0 ? R : 0;
-    G = G > 0 ? G : 0;
-    B = B > 0 ? B : 0;
-
-    const rHex = R.toString(16).padStart(2, '0');
-    const gHex = G.toString(16).padStart(2, '0');
-    const bHex = B.toString(16).padStart(2, '0');
-
-    return `#${rHex}${gHex}${bHex}`;
-  } catch (e) {
-    return hex;
-  }
+// 締切までの日数。時刻は切り捨てて日単位で数える
+function daysUntil(dateStr: string): number {
+  if (!dateStr) return 0;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return 0;
+  const due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const n = new Date();
+  const today = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  return Math.round((due.getTime() - today.getTime()) / 86400000);
 }
+
+// YYYY-MM-DD -> YYYY.MM.DD
+function formatDot(dateStr: string): string {
+  return dateStr ? dateStr.replace(/-/g, '.') : '—';
+}
+
+// YYYY-MM-DD -> MM.DD
+function formatMd(dateStr: string): string {
+  return dateStr ? dateStr.slice(5).replace('-', '.') : '';
+}
+
+// 残日数。8日以上は墨、7日以内は青竹字、当日は「本日締切」、超過は白抜き
+function DaysLeft({ days }: { days: number }) {
+  if (days < 0) return <span className="num tag tag-fill">超過 {Math.abs(days)}日</span>;
+  if (days === 0) return <span className="num text-note text-accent">本日締切</span>;
+  if (days <= 7) return <span className="num text-note text-accent">残 {days}日</span>;
+  return <span className="num text-note">残 {days}日</span>;
+}
+
+// 入金の状態は色分けでなく文字で示す
+function DepositTag({ status }: { status: DepositStatus }) {
+  if (status === 'paid') return <span className="tag shrink-0">済</span>;
+  if (status === 'unpaid') return <span className="tag tag-accent shrink-0">未</span>;
+  return null;
+}
+
+// Hex color shade/brightness helper
 
 // Sine wave buzzer sound for alarms
 function playAlarmSound() {
@@ -122,65 +132,25 @@ export default function App() {
   const [newTodoDeadline, setNewTodoDeadline] = useState('');
 
   // --- Custom Style Configuration State ---
+  // Firestore の customStyle は既存のキーをそのまま保つ（データ構造は変えない）。
+  // ただし配色として実際に使うのは accentColor だけで、他は薄墨紙の固定値に揃えてある。
   const [customStyle, setCustomStyle] = useState<CustomStyleConfig>({
     useCustomColor: true,
-    primaryColor: '#ffd803',
-    accentColor: '#ffd803',
-    bgColor: '#fffffe',
-    sidebarColor: '#f7f8fa',
-    subColor: '#2d334a',
-    textAccentColor: '#272343',
+    primaryColor: '#2F6B4F',
+    accentColor: '#2F6B4F',
+    bgColor: '#F4F5F3',
+    sidebarColor: '#F4F5F3',
+    subColor: '#838A80',
+    textAccentColor: '#262A26',
     themePreset: 'pastel',
     headerBgUrl: '',
     deadlineCatUrl: '',
-    showEmojis: true,
+    showEmojis: false,
     showStickers: true,
     darkMode: false,
-    dashboardTitle: 'クリエイティブスタジオ・ダッシュボード'
+    dashboardTitle: ''
   });
 
-  const PRESET_THEME_COLORS = {
-    pastel: {
-      accentColor: '#ffd803',
-      bgColor: '#fffffe',
-      sidebarColor: '#f7f8fa',
-      subColor: '#2d334a',
-      textAccentColor: '#272343',
-      dark: { accentColor: '#ffd803', bgColor: '#1a1b2d', sidebarColor: '#24253a', subColor: '#828ba3', textAccentColor: '#ffffff' }
-    },
-    sage: {
-      accentColor: '#0e172c',
-      bgColor: '#fec7d7',
-      sidebarColor: '#ffdbe3',
-      subColor: '#ff70a6',
-      textAccentColor: '#0e172c',
-      dark: { accentColor: '#fec7d7', bgColor: '#0e172c', sidebarColor: '#17213d', subColor: '#ff758f', textAccentColor: '#ffffff' }
-    },
-    autumn: {
-      accentColor: '#6246ea',
-      bgColor: '#fffffe',
-      sidebarColor: '#f4f3ff',
-      subColor: '#907eff',
-      textAccentColor: '#2b2c34',
-      dark: { accentColor: '#a78bfa', bgColor: '#15141c', sidebarColor: '#1d1c26', subColor: '#818cf8', textAccentColor: '#ffffff' }
-    },
-    pop: {
-      accentColor: '#3da9fc',
-      bgColor: '#fffffe',
-      sidebarColor: '#f0f7ff',
-      subColor: '#5f6c7b',
-      textAccentColor: '#094067',
-      dark: { accentColor: '#3da9fc', bgColor: '#09111e', sidebarColor: '#0f1d30', subColor: '#38bdf8', textAccentColor: '#ffffff' }
-    },
-    indigo: {
-      accentColor: '#9a7b56',
-      bgColor: '#fcfaf7',
-      sidebarColor: '#f5ede4',
-      subColor: '#c19b6c',
-      textAccentColor: '#3e2723',
-      dark: { accentColor: '#d7b58e', bgColor: '#1c120c', sidebarColor: '#281b12', subColor: '#be9b7b', textAccentColor: '#f5ebd0' }
-    }
-  };
 
   // --- active alarm trigger state ---
   const [activeAlarm, setActiveAlarm] = useState<{
@@ -191,35 +161,93 @@ export default function App() {
     timeString: string;
   } | null>(null);
 
+  // userId を除き、キー順に依存しない指紋。Firestore から来た doc.data() と
+  // ローカルのオブジェクトを同じ土俵で比較するために使う。
+  const stickerFingerprint = (st: PlacedSticker): string => {
+    const { userId: _userId, ...rest } = st as PlacedSticker & { userId?: string };
+    return JSON.stringify(rest, Object.keys(rest).sort());
+  };
+
   // --- Draggable Stickers State ---
   const [stickers, setStickers] = useState<PlacedSticker[]>([]);
 
-  const handleStickersChange = async (updated: PlacedSticker[]) => {
-    setStickers(updated);
+  // ドラッグ中は毎フレーム onStickersChange が飛んでくるので、state だけ即時更新し、
+  // 永続化（localStorage / Firestore）は 1 秒デバウンスで 1 回だけ行う。
+  const STICKER_PERSIST_DEBOUNCE_MS = 1000;
+  // 直近で保存済みのステッカー内容（id -> JSON）。こことの差分だけを書き込む。
+  const persistedStickersRef = useRef<Map<string, string>>(new Map());
+  const pendingStickersRef = useRef<PlacedSticker[] | null>(null);
+  const stickerFlushTimerRef = useRef<number | null>(null);
+  const userRef = useRef<FirebaseUser | null>(null);
+  userRef.current = user;
+
+  const flushStickers = useCallback(async () => {
+    if (stickerFlushTimerRef.current !== null) {
+      window.clearTimeout(stickerFlushTimerRef.current);
+      stickerFlushTimerRef.current = null;
+    }
+    const updated = pendingStickersRef.current;
+    if (!updated) return;
+    pendingStickersRef.current = null;
+
     localStorage.setItem('manga_illust_stickers_v1', JSON.stringify(updated));
 
-    if (user) {
-      try {
-        const currentStickersInCloud = await getDocs(query(collection(db, 'stickers'), where('userId', '==', user.uid)));
-        const cloudIds = currentStickersInCloud.docs.map(doc => doc.id);
-        const updatedIds = updated.map(st => st.id);
-
-        // Delete removed stickers
-        for (const id of cloudIds) {
-          if (!updatedIds.includes(id)) {
-            await deleteDoc(doc(db, 'stickers', id));
-          }
-        }
-
-        // Save new/existing stickers
-        for (const sticker of updated) {
-          await setDoc(doc(db, 'stickers', sticker.id), { ...sticker, userId: user.uid });
-        }
-      } catch (e) {
-        handleFirestoreError(e, OperationType.WRITE, 'stickers');
-      }
+    const currentUser = userRef.current;
+    if (!currentUser) {
+      // 未ログイン時は localStorage のみ。次回ログイン時に差分判定できるよう記録は残す。
+      persistedStickersRef.current = new Map(updated.map(st => [st.id, stickerFingerprint(st)]));
+      return;
     }
-  };
+
+    const previous = persistedStickersRef.current;
+    const next = new Map<string, string>();
+    for (const sticker of updated) next.set(sticker.id, stickerFingerprint(sticker));
+
+    try {
+      // 削除されたステッカー（直前の state との差分。getDocs は不要）
+      for (const id of previous.keys()) {
+        if (!next.has(id)) {
+          await deleteDoc(doc(db, 'stickers', id));
+        }
+      }
+
+      // 追加・変更のあったステッカーのみ書き込む
+      for (const sticker of updated) {
+        if (previous.get(sticker.id) === next.get(sticker.id)) continue;
+        await setDoc(doc(db, 'stickers', sticker.id), { ...sticker, userId: currentUser.uid });
+      }
+
+      persistedStickersRef.current = next;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'stickers');
+    }
+  }, []);
+
+  const handleStickersChange = useCallback((updated: PlacedSticker[]) => {
+    setStickers(updated);
+    pendingStickersRef.current = updated;
+    if (stickerFlushTimerRef.current !== null) {
+      window.clearTimeout(stickerFlushTimerRef.current);
+    }
+    stickerFlushTimerRef.current = window.setTimeout(() => {
+      stickerFlushTimerRef.current = null;
+      void flushStickers();
+    }, STICKER_PERSIST_DEBOUNCE_MS);
+  }, [flushStickers]);
+
+  // ドラッグ終了・離脱時には待たずに書き出す
+  useEffect(() => {
+    const flushNow = () => { void flushStickers(); };
+    window.addEventListener('mouseup', flushNow);
+    window.addEventListener('touchend', flushNow);
+    window.addEventListener('beforeunload', flushNow);
+    return () => {
+      window.removeEventListener('mouseup', flushNow);
+      window.removeEventListener('touchend', flushNow);
+      window.removeEventListener('beforeunload', flushNow);
+      void flushStickers();
+    };
+  }, [flushStickers]);
 
   // --- Google Authentication state observer ---
   useEffect(() => {
@@ -371,6 +399,11 @@ export default function App() {
         loadedStickers.push(doc.data() as PlacedSticker);
       });
       setStickers(loadedStickers);
+      // クラウドの内容＝保存済みとして記録。これが差分書き込みの基準になる。
+      // ローカルで編集中（デバウンス待ち）の分は上書きしない。
+      if (!pendingStickersRef.current) {
+        persistedStickersRef.current = new Map(loadedStickers.map(st => [st.id, stickerFingerprint(st)]));
+      }
     }, (error) => {
       console.warn('Firestore real-time sync error for stickers (retrying/reconnecting):', error.message || error);
     });
@@ -415,8 +448,12 @@ export default function App() {
 
     if (isMigrating) return;
 
+    // ユーザーが変わったら存在フラグを引き継がない
+    userConfigExistsRef.current = false;
+
     const configDocRef = doc(db, 'userConfigs', user.uid);
     const unsubscribe = onSnapshot(configDocRef, (snap) => {
+      userConfigExistsRef.current = snap.exists();
       if (snap.exists()) {
         const data = snap.data();
         if (data.customStyle) {
@@ -671,7 +708,7 @@ export default function App() {
         }
 
         if (hasMigratedAny) {
-          alert(`Googleログインに成功しました。ローカルに保存されていたデータをクラウド（Firestore）へ安全に移転・統合しました！✨☁️\n（タスク: ${migratedTasksCount}件、TODO: ${migratedTodosCount}件、ステッカー: ${migratedStickersCount}件）`);
+          toast(`Googleにログインしました。この端末のデータをクラウドへ移しました\n（タスク: ${migratedTasksCount}件、TODO: ${migratedTodosCount}件、ステッカー: ${migratedStickersCount}件）`, 'success');
         }
       } catch (e) {
         console.error('Error during cloud migration on login:', e);
@@ -685,42 +722,54 @@ export default function App() {
 
 
   // --- Real-Time Background Meeting Checker & Alarm Chime ---
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = new Date();
-      tasks.forEach((task) => {
-        if (task.type === 'meeting' && task.meetingDate) {
-          const mDate = new Date(task.meetingDate);
-          const diffMs = mDate.getTime() - now.getTime();
-          // Convert difference into rounded minutes
-          const diffMins = Math.round(diffMs / 60000);
+  // 打合せタスクが 1 件も無い間はタイマーを動かさない。
+  const meetingTasks = useMemo(
+    () => tasks.filter((task) => task.type === 'meeting' && task.meetingDate),
+    [tasks]
+  );
+  // 打合せの顔ぶれ・日時が変わった時だけタイマーを張り直す
+  // （進捗率の更新など無関係な編集で再起動しないように）
+  const meetingSignature = meetingTasks.map((t) => `${t.id}@${t.meetingDate}`).join('|');
+  const meetingTasksRef = useRef(meetingTasks);
+  meetingTasksRef.current = meetingTasks;
 
-          // We trigger alarm alert popup for 10 or 5 minutes remaining
-          if (diffMins === 5 || diffMins === 10) {
-            const cacheKey = `meeting_alarm_alert_${task.id}_${diffMins}`;
-            const alreadyTriggered = sessionStorage.getItem(cacheKey);
-            if (!alreadyTriggered) {
-              sessionStorage.setItem(cacheKey, 'true');
-              setActiveAlarm({
-                taskId: task.id,
-                title: task.title,
-                clientName: task.clientName || '（打ち合わせ先）',
-                minutesLeft: diffMins,
-                timeString: mDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              });
-              playAlarmSound();
-            }
+  useEffect(() => {
+    if (!meetingSignature) return;
+
+    const check = () => {
+      const now = new Date();
+      meetingTasksRef.current.forEach((task) => {
+        const mDate = new Date(task.meetingDate as string);
+        const diffMs = mDate.getTime() - now.getTime();
+        // Convert difference into rounded minutes
+        const diffMins = Math.round(diffMs / 60000);
+
+        // We trigger alarm alert popup for 10 or 5 minutes remaining.
+        // 分に丸めているので該当する状態は 60 秒続く。30 秒間隔なら取りこぼさない。
+        if (diffMins === 5 || diffMins === 10) {
+          const cacheKey = `meeting_alarm_alert_${task.id}_${diffMins}`;
+          const alreadyTriggered = sessionStorage.getItem(cacheKey);
+          if (!alreadyTriggered) {
+            sessionStorage.setItem(cacheKey, 'true');
+            setActiveAlarm({
+              taskId: task.id,
+              title: task.title,
+              clientName: task.clientName || '（打ち合わせ先）',
+              minutesLeft: diffMins,
+              timeString: mDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            });
+            playAlarmSound();
           }
         }
       });
-    }, 10000); // Check every 10 seconds for instant action
+    };
+
+    check(); // 読み込み直後の取りこぼしを防ぐ
+    const timer = setInterval(check, 30000);
 
     return () => clearInterval(timer);
-  }, [tasks]);
+  }, [meetingSignature]);
 
-
-  // Make sure to select a valid task when the active task is deleted
-  const selectedTask = tasks.find(t => t.id === selectedTaskId) || null;
 
   // --- Google Sign-In & Sign-Out handlers ---
   // Google ログイン ＝ カレンダー接続。Firebase Auth の Google プロバイダに
@@ -743,13 +792,13 @@ export default function App() {
       setCalendarSettings(updated);
       localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
       if (!silent) {
-        alert(accessToken ? 'Googleでログインし、カレンダーに接続しました！🌸📅' : 'Googleでログインしました！🌸☁️');
+        toast(accessToken ? 'Googleでログインし、カレンダーに接続しました' : 'Googleでログインしました', 'success');
       }
       return accessToken;
     } catch (err) {
       console.error("Sign in failed:", err);
       if (!silent) {
-        alert("Googleサインインに失敗しました。詳細: " + (err instanceof Error ? err.message : String(err)));
+        toast("Googleサインインに失敗しました。詳細: " + (err instanceof Error ? err.message : String(err)), 'error');
       }
       return null;
     }
@@ -769,11 +818,14 @@ export default function App() {
   const handleGoogleSignOut = async () => {
     try {
       await signOut(auth);
-      alert('ログアウトしました。🔒');
+      toast('ログアウトしました');
     } catch (err) {
       console.error("Sign out failed:", err);
     }
   };
+
+  // userConfigs ドキュメントが既に存在するか（差分更新できるかの判定に使う）
+  const userConfigExistsRef = useRef(false);
 
   // --- Sync user-level configurations to Firestore ---
   const updateUserConfig = async (
@@ -784,23 +836,35 @@ export default function App() {
     if (!user) return;
     try {
       const configDocRef = doc(db, 'userConfigs', user.uid);
-      await setDoc(configDocRef, {
-        userId: user.uid,
-        customStyle: style || customStyle,
-        activeThemeId: themeId || activeTheme.id,
-        calendarSettings: stripToken(calSettings || calendarSettings)
-      }, { merge: true });
+
+      // firestore.rules の isValidUserConfig は 4 つのキーが揃っていることを
+      // create / update 双方で要求する。merge 更新の場合 request.resource.data は
+      // 「マージ後のドキュメント」なので、既存ドキュメントに対してなら
+      // 差分だけ送っても検証を通る。まだ作られていない時だけ全体を書く。
+      if (!userConfigExistsRef.current) {
+        await setDoc(configDocRef, {
+          userId: user.uid,
+          customStyle: style || customStyle,
+          activeThemeId: themeId || activeTheme.id,
+          calendarSettings: stripToken(calSettings || calendarSettings)
+        }, { merge: true });
+        userConfigExistsRef.current = true;
+        return;
+      }
+
+      // 変更のあったフィールドだけ送る。customStyle には base64 のヘッダー画像が
+      // 入るので、テーマ変更のたびに丸ごと送ると通信量が大きくなる。
+      const payload: Record<string, unknown> = { userId: user.uid };
+      if (style !== undefined) payload.customStyle = style;
+      if (themeId !== undefined) payload.activeThemeId = themeId;
+      if (calSettings !== undefined) payload.calendarSettings = stripToken(calSettings);
+
+      // userId しか無い＝更新対象が無い
+      if (Object.keys(payload).length === 1) return;
+
+      await setDoc(configDocRef, payload, { merge: true });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `userConfigs/${user.uid}`);
-    }
-  };
-
-  // --- Theme Change handler ---
-  const handleThemeChange = (theme: ThemeConfig) => {
-    setActiveTheme(theme);
-    localStorage.setItem(LOCAL_STORAGE_THEME_KEY, theme.id);
-    if (user) {
-      updateUserConfig(undefined, theme.id, undefined);
     }
   };
 
@@ -826,7 +890,7 @@ export default function App() {
       if (user) {
         updateUserConfig(undefined, undefined, reset);
       }
-      alert('ログアウトしました。🔒');
+      toast('ログアウトしました');
     }
   };
 
@@ -861,7 +925,7 @@ export default function App() {
         if (checkedCount === totalSteps && prevValue === false) {
           // Play a slight celebratory alert message shortly
           setTimeout(() => {
-            alert(`🎉🎨「${t.title}」が【100% 完了】しました！\n本当に素晴らしい出来栄えです！お疲れ様でした！🍓🍒💖`);
+            toast(`「${t.title}」が100%完了しました\nお疲れさまでした`, 'success');
           }, 150);
         }
 
@@ -971,10 +1035,10 @@ export default function App() {
 
     // Google Calendarとの非同期連動
     if (calendarSettings.accessToken) {
-      alert(isNew ? '新しい制作お仕事を保存しました。Googleカレンダーへの同期登録を行います...✨' : '制作設定を保存しました。カレンダー同期情報を更新しています...♻️');
+      toast(isNew ? '案件を保存しました。Googleカレンダーへ同期します' : '案件を保存しました。カレンダーの同期情報を更新します');
       await doSyncToGoogle(savedTask, updatedTasks);
     } else {
-      alert(isNew ? '制作お仕事を登録しました！🌸' : '制作設定を更新しました！💖');
+      toast(isNew ? '案件を登録しました' : '案件を更新しました', 'success');
     }
   };
 
@@ -982,7 +1046,7 @@ export default function App() {
   const doSyncToGoogle = async (task: Task, currentTasks: Task[]) => {
     const accessToken = await ensureCalendarToken();
     if (!accessToken) {
-      alert('Googleカレンダーに接続できませんでした。「Googleでログイン」からやり直してください。🔒');
+      toast('Googleカレンダーに接続できませんでした。設定からログインし直してください', 'error');
       return;
     }
 
@@ -1030,10 +1094,10 @@ export default function App() {
         }
       }
 
-      alert('🟢 Googleカレンダーとの自動登録・同期がすべて完了しました！📅✨');
+      toast('Googleカレンダーへの登録・同期が完了しました', 'success');
     } catch (err) {
       console.error(err);
-      alert('Googleカレンダーの登録に一部失敗しました。設定でログインをやり直してみてね。💦');
+      toast('Googleカレンダーの登録に一部失敗しました。設定からログインし直してください', 'error');
     }
   };
 
@@ -1092,7 +1156,7 @@ export default function App() {
     if (selectedTaskId === taskId) {
       setSelectedTaskId(filtered.length > 0 ? filtered[0].id : null);
     }
-    alert('制作お仕事を削除しました。🧹');
+    toast('案件を削除しました');
   };
 
   // --- TODO Handlers ---
@@ -1132,7 +1196,7 @@ export default function App() {
       }
     }
 
-    alert('「とりあえずやること(TODO)」を追加しました！🌸');
+    toast('TODOを追加しました', 'success');
   };
 
   const handleToggleTodo = async (todoId: string) => {
@@ -1188,11 +1252,11 @@ export default function App() {
 
   const handleSyncTodoEvent = async (todo: Todo) => {
     if (!calendarSettings.accessToken) {
-      alert('Googleカレンダーにログインしていません。設定内の「カレンダーに接続」から認証してください。🔒');
+      toast('Googleカレンダーに接続していません。設定から接続してください', 'error');
       return;
     }
     if (!todo.deadline) {
-      alert('そのTODOには期限・日付が設定されていません。💦');
+      toast('そのTODOには期限が設定されていません', 'error');
       return;
     }
 
@@ -1216,10 +1280,10 @@ export default function App() {
           }
         }
 
-        alert('🟢 TODOをGoogleカレンダーと連携しました！📅✨');
+        toast('TODOをGoogleカレンダーに登録しました', 'success');
       }
     } catch (e) {
-      alert('カレンダーへの登録に失敗しました。💦');
+      toast('カレンダーへの登録に失敗しました', 'error');
     }
   };
 
@@ -1252,22 +1316,6 @@ export default function App() {
     if (filterType === 'all') return true;
     return t.type === filterType;
   });
-
-  const isDark = activeTheme.id === 'cosmic' || !!customStyle?.darkMode;
-
-  // Cute system random quote generator for creative encouragement
-  const encouragementQuote = React.useMemo(() => {
-    const quotes = [
-      "ネームから一本の線になびく、あなただけのストーリーを形にしてね。✍️🌸",
-      "水分補給をお忘れなく！進捗チェックはあなたの強い味方です。🧉🧸",
-      "締め切りを乗り越えた先には、きらきら輝く作品が待っています！✨🍓",
-      "下書きが綺麗にのると、线画がとっても楽しくなりますよ！⭐🥐",
-      "今日もあなたのキャンバスに、一番素敵な魔法が届きますように。🌟🌙"
-    ];
-    // Seed simply based on date
-    const idx = new Date().getDay() % quotes.length;
-    return quotes[idx];
-  }, [selectedTaskId]);
 
   // Find all uncompleted items that match the urgent conditions:
   // - Within 1 week (<= 7 days) and progress is 80% or less
@@ -1365,957 +1413,402 @@ export default function App() {
     return items;
   }, [tasks, todos]);
 
-  const currentPreset = customStyle.themePreset || 'pastel';
-  const isPresetCustom = currentPreset === 'custom';
-  const presetDefaults = PRESET_THEME_COLORS[currentPreset as 'pastel' | 'sage' | 'autumn' | 'pop' | 'indigo'] || PRESET_THEME_COLORS.pastel;
-
-  const defaultAccent = isDark ? presetDefaults.dark.accentColor : presetDefaults.accentColor;
-  const defaultBg = isDark ? presetDefaults.dark.bgColor : presetDefaults.bgColor;
-  const defaultSidebar = isDark ? presetDefaults.dark.sidebarColor : presetDefaults.sidebarColor;
-  const defaultSub = isDark ? presetDefaults.dark.subColor : presetDefaults.subColor;
-  const defaultTextAccent = isDark ? presetDefaults.dark.textAccentColor : presetDefaults.textAccentColor;
-
-  const customAccent = isPresetCustom ? (customStyle.accentColor || '#9b7fe8') : defaultAccent;
-  const customBg = isPresetCustom ? (customStyle.bgColor || (isDark ? '#0c0a18' : '#f5f3f9')) : defaultBg;
-  const customSidebar = isPresetCustom ? (customStyle.sidebarColor || (isDark ? '#16132b' : '#eae5f5')) : defaultSidebar;
-  const customSub = isPresetCustom ? (customStyle.subColor || '#e197b9') : defaultSub;
-  const customTextAccent = isPresetCustom ? (customStyle.textAccentColor || '#22173d') : defaultTextAccent;
+  // 設定で選べるのはアクセント1色だけ。地・文字・罫は薄墨紙の固定値。
+  // themePreset === 'custom' は「利用者が自分で色を選んだ」印。
+  // 旧デザインのプリセット由来の色は引き継がず、既定の青竹に寄せる。
+  const uiAccent =
+    (customStyle.themePreset === 'custom' && customStyle.accentColor) || '#2F6B4F';
 
   return (
-    <div className={`min-h-screen py-6 px-4 md:px-8 font-sans transition-all duration-300 ${activeTheme.bgClass} ${isDark ? 'text-indigo-150' : 'text-slate-800'}`}>
-      
+    <div className="min-h-screen bg-desk font-gothic text-sumi">
+
       {/* データの同期・移行中（一括マイグレーション）オーバーレイ */}
       {isMigrating && (
-        <div className="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-slate-950/80 text-white backdrop-blur-md">
-          <div className="flex flex-col items-center max-w-sm p-8 text-center bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl animate-fade-in mx-4">
-            {/* Spinning Indicator */}
-            <div className="relative flex items-center justify-center w-20 h-20 mb-6">
-              <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full animate-pulse"></div>
-              <div className="absolute inset-0 border-4 border-transparent border-t-indigo-400 rounded-full animate-spin"></div>
-              <RefreshCw className="w-8 h-8 text-indigo-300 animate-spin" style={{ animationDuration: '3s' }} />
-            </div>
-            
-            <h3 className="mb-3 text-xl font-bold tracking-tight text-white font-sans">
-              クラウドとデータを同期中...
-            </h3>
-            <p className="text-sm leading-relaxed text-slate-300">
-              ローカルで作成した大切なお仕事データ（作品・タスク、TODO、配置ステッカーなど）を、接続されたGoogleアカウントのクラウド環境へ安全に移転・マージしています。
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-desk">
+          <div className="mx-4 w-full max-w-[420px] bg-paper px-8 py-9" style={{ border: '0.5px solid #262A26' }}>
+            <h3 className="mincho text-title leading-none">クラウドとデータを同期しています</h3>
+            <p className="mt-4 text-note text-hojo leading-[1.8]">
+              この端末に保存されていたお仕事・TODO・ステッカーを、接続した Google アカウントのクラウドへ
+              移しています。終わるまで画面を閉じないでください。
             </p>
-            
-            <div className="mt-6 flex gap-2 items-center text-xs text-indigo-300 font-mono bg-indigo-950/50 py-2 px-4 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
-              <span>Syncing with Cloud...</span>
-            </div>
+            <p className="num mt-5 text-note text-hojo">Syncing…</p>
           </div>
         </div>
       )}
 
-      {/* Custom primary color style overrides if enabled */}
-      {customStyle.useCustomColor && (
-        <style dangerouslySetInnerHTML={{__html: `
-          :root {
-            --primary-color: ${customAccent} !important;
-            --primary-hover: ${adjustColorBrightness(customAccent, -12)} !important;
-            --primary-light: ${customAccent}14 !important;
-            --primary-border: ${customAccent}2b !important;
-            --primary-strong: ${customAccent}cc !important;
-            --sub-color: ${customSub} !important;
-            --text-heading-color: ${customTextAccent} !important;
-          }
-          
-          /* Screen Background Plain and Solid (Color 2: BG Color) */
-          body, .min-h-screen {
-            background-color: ${customBg} !important;
-            background-image: none !important;
-          }
+      {/* 選んだアクセント1色だけを流し込む（地・文字・罫は固定値） */}
+      <style dangerouslySetInnerHTML={{ __html: `:root { --ui-accent: ${uiAccent}; }` }} />
 
-          /* Match all sidebar boxes to transparent (Color 3: Sidebar background removed completely) */
-          .custom-sidebar-container {
-            background-color: transparent !important;
-            background-image: none !important;
-          }
-          .custom-sidebar-container .bg-white, 
-          .custom-sidebar-container [class*="cardClass"], 
-          .custom-sidebar-container .bg-slate-50 {
-            background-color: transparent !important;
-          }
+      <div className="mx-auto w-full max-w-[1440px] bg-paper min-h-screen" style={{ borderLeft: '0.5px solid #D7DAD3', borderRight: '0.5px solid #D7DAD3' }}>
 
-          /* Match all content cards, boxes, and modal popups to page background color (customBg) */
-          .custom-content-container,
-          .custom-content-container .bg-white,
-          .custom-content-container [class*="cardClass"],
-          .custom-content-container .bg-slate-50,
-          .custom-content-container .bg-indigo-900\\/45,
-          .custom-content-container .bg-indigo-950\\/20,
-          .custom-content-container .bg-white\\/40,
-          .custom-content-container .bg-white\\/50,
-          .custom-content-container .bg-rose-50\\/40,
-          .bg-slate-50\\/50,
-          .bg-white\\/75,
-          .bg-white\\/70,
-          .fixed .bg-white,
-          .fixed [class*="cardClass"],
-          .fixed .rounded-3xl,
-          .fixed .bg-indigo-950\\/40,
-          #setting-modal-container,
-          #task-form-modal-container {
-            background-color: ${customBg} !important;
-          }
-
-          /* Remove outline of environments & customizations setting modal / task modal */
-          #setting-modal-container,
-          #task-form-modal-container {
-            border: none !important;
-            border-width: 0px !important;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important;
-          }
-
-          /* Unified box frames matching the soft eucalyptus/ochre/cherry tones (Color 4: Sub Color) */
-          .border, .border-2, .border-dashed, [class*="borderClass"], .border-slate-100, .border-slate-200, .border-indigo-800, .border-rose-100\\/32, .border-rose-200\\/50, .border-indigo-850, .border-rose-100\\/30, .border-slate-150 {
-            border-color: ${customSub}80 !important;
-            border-width: 2px !important;
-          }
-          hr {
-            border-color: ${customSub}40 !important;
-          }
-
-          .custom-primary-bg { 
-            background-color: ${customAccent} !important; 
-            border-color: ${customAccent} !important; 
-            color: #fff !important; 
-          }
-          .custom-primary-bg:hover {
-            background-color: ${adjustColorBrightness(customAccent, -12)} !important;
-            border-color: ${adjustColorBrightness(customAccent, -12)} !important;
-          }
-          .custom-primary-text { 
-            color: ${customAccent} !important; 
-          }
-          .custom-primary-border { 
-            border-color: ${customAccent} !important; 
-          }
-          .custom-shadow {
-            box-shadow: 0 10px 15px -3px ${customAccent}22 !important;
-          }
-          .accent-rose-500 {
-            accent-color: ${customAccent} !important;
-          }
-
-          /* --- Dynamic global style overrides --- */
-          /* 1. All primary background elements (Color 1: Accent Color) */
-          .bg-rose-500, .bg-rose-600, .bg-emerald-500, .bg-emerald-600, .bg-pink-500, .bg-pink-600 {
-            background-color: ${customAccent} !important;
-            color: #ffffff !important;
-          }
-          
-          /* 2. All hover states */
-          .hover\\:bg-rose-600:hover, .hover\\:bg-rose-500:hover, .hover\\:bg-emerald-600:hover, .hover\\:bg-pink-600:hover {
-            background-color: ${adjustColorBrightness(customAccent, -12)} !important;
-          }
-
-          /* 3. Text contrast pairing with customTextAccent for branding, h1, h2 (Color 5: Text Accent) */
-          h1, h2, h3, .font-extrabold {
-            color: ${customTextAccent} !important;
-          }
-          .text-slate-800, .text-slate-700, .text-slate-650, .text-slate-600, .text-slate-50,
-          p, span, h4, th, td, label, .text-slate-900, .font-sans {
-            color: ${isDark ? '#e4f0fc' : '#22173d'} !important; 
-          }
-          .text-slate-400, .text-slate-450, .text-slate-455 {
-            color: ${isDark ? '#cbd5e1' : '#726d88'} !important;
-          }
-          .text-indigo-600, .text-rose-600, .text-pink-600, .text-emerald-700, .text-rose-700, .text-indigo-700, .text-emerald-800, .text-indigo-150, .text-indigo-200 {
-            color: ${isDark ? '#cbd5e1' : '#5b21b6'} !important; 
-          }
-          .text-rose-500, .text-pink-500, .text-rose-400, .text-pink-400 {
-            color: ${isDark ? '#fed7aa' : '#9f1239'} !important;
-          }
-
-          /* 4. Soft backgrounds & checkbox states - using customSub or customAccent for subtle integration */
-          .bg-rose-50, .bg-pink-50, .bg-rose-100\\/70, .bg-pink-100, .bg-rose-100, .bg-emerald-100, .bg-pink-100\\/20, .bg-rose-500\\/10, .bg-rose-500\\/15, .bg-rose-500\\/5, .bg-rose-555\\/10, .bg-rose-500\\/30, .bg-rose-500\\/20, .bg-rose-550\\/10 {
-            background-color: ${customSub}1a !important;
-            color: ${isDark ? '#e4f0fc' : '#22173d'} !important;
-          }
-          
-          /* 6. Active checkbox backgrounds */
-          .bg-indigo-100.text-indigo-700, .bg-rose-100.text-rose-700, .bg-emerald-100.text-emerald-700 {
-            background-color: ${customSub}30 !important;
-            color: ${customAccent} !important;
-            border-color: ${customSub}60 !important;
-          }
-
-          /* 7. Input focus rings */
-          input:focus, textarea:focus {
-            border-color: ${customAccent} !important;
-            --tw-ring-color: ${customAccent}33 !important;
-            outline: none !important;
-          }
-
-          /* 8. Progress and gradient fills */
-          .bg-linear-to-r.from-emerald-400.to-indigo-500 {
-            background: linear-gradient(to right, ${customSub}, ${customAccent}) !important;
-          }
-          .bg-linear-to-r.from-rose-400.to-amber-400 {
-            background: linear-gradient(to right, ${customAccent}, ${customSub}) !important;
-          }
-
-          /* 9. Sidebar selection, active highlights, rings and focus states override */
-          .ring-rose-450, .ring-rose-400\/20, .border-rose-450, .focus-visible:focus, :focus {
-            --tw-ring-color: ${customAccent}35 !important;
-            border-color: ${customAccent} !important;
-          }
-          .border-l-rose-500 {
-            border-left-color: ${customAccent} !important;
-          }
-          .ring-4, .ring-2 {
-            --tw-ring-color: ${customAccent}35 !important;
-          }
-
-          /* 10. Global Custom Scrollbars matching the dynamic UI theme accents */
-          /* Firefox */
-          * {
-            scrollbar-width: thin !important;
-            scrollbar-color: ${customAccent}80 transparent !important;
-          }
-          /* Chrome, Edge, Safari WebKit Engine styling */
-          ::-webkit-scrollbar {
-            width: 8px !important;
-            height: 8px !important;
-          }
-          ::-webkit-scrollbar-track {
-            background: transparent !important;
-          }
-          ::-webkit-scrollbar-thumb {
-            background-color: ${customAccent}80 !important;
-            border-radius: 9999px !important;
-          }
-          ::-webkit-scrollbar-thumb:hover {
-            background-color: ${customAccent} !important;
-          }
-        `}} />
-      )}
-
-      {/* Visual background ambient container */}
-      <div className="max-w-7xl mx-auto">
-
-        {/* Header Section */}
-        {customStyle.headerBgUrl ? (
-          /* Massive Full-Width Premium Illustration Banner styled like professional art portfolio headers */
-          <div className="rounded-3xl border-0 mb-6 relative overflow-hidden group shadow-lg transition-all duration-300">
-            {/* The main banner image, fully visible (opacity 100%) and beautifully filled */}
-            <img 
-              src={customStyle.headerBgUrl} 
-              alt="カスタムイラストヘッダー" 
-              referrerPolicy="no-referrer"
-              className="w-full h-48 sm:h-64 md:h-80 lg:h-[300px] object-cover select-none cursor-pointer hover:brightness-[0.98] duration-300"
-              onClick={() => setSelectedTaskId(null)}
-              title="クリックでホームに戻る 🏠"
-            />
-            
-            {/* Minimalist guide overlay inside the banner */}
-            <div className="absolute top-4 left-4 bg-slate-950/60 backdrop-blur-md text-white text-[10px] font-black tracking-widest uppercase py-1 px-3 rounded-full z-10 flex items-center gap-1.5 select-none hover:bg-slate-900 pointer-events-none">
-              <span>🏠 STUDIO PREVIEW</span>
-              <span className="opacity-60">•</span>
-              <span>CLICK BANNER FOR HOME</span>
-            </div>
-
-            {/* Real-time Clock overlaid on top of the header image - Text only, larger, borderless/backgroundless */}
-            <div className="absolute top-4 right-4 z-10 text-right select-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] text-white">
-              <HeaderClock isDark={isDark} alwaysWhite={true} />
-            </div>
-
-            {/* Quick action buttons floating elegantly in glassmorphic tray in the banner corner */}
-            <div className="absolute bottom-4 right-4 flex items-center gap-2.5 z-10 bg-black/30 dark:bg-black/60 backdrop-blur-md p-2 rounded-2xl border border-white/10 shadow-lg">
-              {/* Google Sign-In or User Profile */}
-              {user ? (
-                <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl bg-white/15 text-white border border-white/10">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} referrerPolicy="no-referrer" alt={user.displayName || ''} className="w-6 h-6 rounded-full border border-white/30" />
-                  ) : (
-                    <User className="w-4 h-4 text-white" />
-                  )}
-                  <span className="text-[11px] font-bold truncate max-w-[80px] hidden sm:inline">{user.displayName || 'ユーザー'}</span>
-                  <button
-                    onClick={handleGoogleSignOut}
-                    className="p-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold text-[10px] cursor-pointer inline-flex items-center gap-0.5 duration-150"
-                    title="ログアウト"
-                  >
-                    <LogOut className="w-3 h-3" />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handleGoogleSignIn}
-                  className="py-2 px-3 rounded-xl bg-white text-slate-800 hover:bg-slate-100 cursor-pointer shadow-md duration-200 flex items-center gap-1.5 text-[11px] font-black"
-                  title="Googleでサインインしてクラウド同期"
-                >
-                  <LogIn className="w-3.5 h-3.5 text-rose-500" />
-                  <span className="hidden xs:inline">Googleでサインイン</span>
-                </button>
-              )}
-
-              {/* Settings button */}
-              <button
-                id="open-settings-btn-banner"
-                onClick={() => setIsSettingModalOpen(true)}
-                className="p-2.5 rounded-xl bg-white/90 text-slate-800 hover:bg-white border border-slate-200 cursor-pointer shadow-xs duration-200"
-                title="ヘッダー画像変更 & 各種カラーテーマ設定 ⚙️"
-              >
-                <Settings className="w-4 h-4 text-slate-700 hover:text-indigo-650" />
-              </button>
-
-              {/* Add task button */}
-              <button
-                id="add-task-btn-banner"
-                onClick={() => {
-                  setEditingTask(null);
-                  setIsTaskModalOpen(true);
-                }}
-                className={`py-2 px-4 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 duration-200 hover:scale-[1.03] shadow-md ${customStyle.useCustomColor ? 'custom-primary-bg' : 'bg-rose-500 text-white'}`}
-              >
-                <Plus className="w-3.5 h-3.5 text-white" />
-                <span>タスク追加</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* Default Header Ribbon when no illustration banner is customized */
-          <div className={`rounded-3xl border-0 p-5 mb-5 flex flex-col sm:flex-row items-center justify-between gap-4 relative overflow-hidden ${activeTheme.cardClass}`} style={{ border: 'none' }}>
-            <div 
-              onClick={() => setSelectedTaskId(null)}
-              className="flex items-center gap-3 cursor-pointer group select-none relative z-10"
-              title="トップページへ戻る"
-            >
-              {customStyle.showEmojis && (
-                <span className="text-3.5xl select-none group-hover:rotate-12 duration-300 animate-bounce-slow font-sans">🎨</span>
-              )}
-              <div className="text-center sm:text-left">
-                <h1 className={`text-2xl font-black font-sans tracking-tight leading-none ${isDark ? 'text-indigo-50' : 'text-slate-800'} flex items-center justify-center sm:justify-start gap-1.5`}>
-                  <span className="group-hover:opacity-80 transition duration-200">作業進捗tracker</span>
-                  <span className={`text-white font-extrabold text-sm border-2 px-1.5 rounded-lg rotate-3 inline-block transition shrink-0 duration-200 ${customStyle.useCustomColor ? 'custom-primary-bg border-transparent' : 'bg-rose-500 border-rose-400/30'}`}>
-                    PRO
-                  </span>
-                </h1>
-                <p className={`text-[11px] mt-1.5 font-medium opacity-80 ${isDark ? 'text-indigo-300' : 'text-slate-500'} flex items-center gap-1`}>
-                  <span>{encouragementQuote}</span>
-                  <span className="text-[9px] text-indigo-400 group-hover:translate-x-1 duration-300">（クリックでホームへ 🏠）</span>
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-end relative z-10">
-              {/* Real-time Date and clock - Text only, larger, borderless/backgroundless */}
-              <div className="px-2.5">
-                <HeaderClock isDark={isDark} />
-              </div>
-
-              {/* Google Sign-In or User Profile */}
-              {user ? (
-                <div className={`flex items-center gap-2.5 p-1.5 rounded-2xl border ${isDark ? 'border-indigo-800/60 bg-indigo-950/40 text-indigo-50' : 'border-slate-200 bg-slate-50 text-slate-800'}`}>
-                  {user.photoURL ? (
-                    <img src={user.photoURL} referrerPolicy="no-referrer" alt={user.displayName || ''} className="w-7 h-7 rounded-full border border-indigo-200 dark:border-indigo-800" />
-                  ) : (
-                    <User className="w-5 h-5 text-slate-500" />
-                  )}
-                  <span className="text-xs font-bold truncate max-w-[100px] hidden md:inline">{user.displayName || 'ユーザー'}</span>
-                  <button
-                    onClick={handleGoogleSignOut}
-                    className="py-1.5 px-3 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs cursor-pointer flex items-center gap-1 shadow-sm duration-150"
-                    title="ログアウト"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">ログアウト</span>
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handleGoogleSignIn}
-                  className={`py-3 px-4 rounded-2xl text-xs font-bold flex items-center justify-center gap-1.5 duration-300 transform hover:scale-[1.03] border cursor-pointer border-slate-200 bg-white text-slate-800 dark:bg-slate-900 dark:text-indigo-200 dark:border-indigo-800`}
-                >
-                  <LogIn className="w-4 h-4 text-rose-500" />
-                  <span>Googleでサインイン</span>
-                </button>
-              )}
-
-              {/* Setting Button */}
-              <button
-                id="open-settings-btn"
-                onClick={() => setIsSettingModalOpen(true)}
-                className="p-2.5 rounded-2xl border-2 border-slate-200 hover:bg-slate-100 dark:border-indigo-800 dark:hover:bg-indigo-900/50 cursor-pointer duration-200 shrink-0 bg-white dark:bg-indigo-950/20"
-                title="カラーテーマ & Googleカレンダー API設定"
-              >
-                <Settings className="w-5 h-5 text-indigo-400 rotate-hover" />
-              </button>
-
-              {/* Task Add Button (Click to pop up) */}
-              <button
-                id="add-task-btn"
-                onClick={() => {
-                  setEditingTask(null);
-                  setIsTaskModalOpen(true);
-                }}
-                className={`py-3 px-5 rounded-2xl text-xs font-bold font-sans cursor-pointer flex items-center justify-center gap-2 duration-300 transform hover:scale-[1.03] shrink-0 ${customStyle.useCustomColor ? 'custom-primary-bg custom-shadow' : activeTheme.primaryClass}`}
-              >
-                <Plus className="w-4 h-4 text-white" />
-                <span>タスクを追加 (ポップアップ)</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 🚨 Urgent Imminent Threats Notification Banner for manga/illust otakus */}
-        {urgentImminentItems.length > 0 && (
-          <div 
-            className="mb-5 p-4 rounded-3xl border-2 relative overflow-hidden flex flex-col md:flex-row items-center gap-4 animate-bounce-slow"
-            style={{ 
-              background: `linear-gradient(to right, ${customSub}15, ${customAccent}08, ${customSub}15)`, 
-              borderColor: customAccent 
-            }}
+        {/* 打合せ通知。画面最上端に1行・塗らない・上下に青竹罫。
+            オーバーレイせず、以下を下に押し下げる */}
+        {activeAlarm && (
+          <div
+            className="flex items-center gap-3 px-4 py-2 md:gap-5 md:px-12"
+            style={{ borderTop: '0.5px solid var(--ui-accent)', borderBottom: '0.5px solid var(--ui-accent)' }}
           >
-            <div className="flex-shrink-0 relative">
-              <img 
-                src={customStyle.deadlineCatUrl || "/src/assets/images/sticker_deadline_cat_1780950114571.png"} 
-                alt="締め切りピンチ" 
-                referrerPolicy="no-referrer"
-                className="w-16 h-16 object-contain rotate-[-5deg] drop-shadow-lg select-none"
-              />
-              <span 
-                className="absolute -top-1 -right-1 text-white font-black text-[10px] px-1.5 py-0.5 rounded-full ring-2 ring-white"
-                style={{ backgroundColor: customAccent }}
-              >
-                SOS
-              </span>
-            </div>
-            
-            <div className="flex-1 w-full">
-              <div className="flex items-center gap-2 mb-1.5 justify-center md:justify-start">
-                <Bell className="w-4 h-4 animate-swing" style={{ color: customAccent }} />
-                <h3 
-                  className="text-sm font-black tracking-wider"
-                  style={{ color: isDark ? '#f3effc' : customAccent }}
-                >
-                  ⚠️ 進行ピンチ！期限間近または進捗遅れの作業・TODOが {urgentImminentItems.length} 件あります！
-                </h3>
-              </div>
-              
-              {/* alerts badge list */}
-              <div className="flex flex-wrap gap-2 justify-center md:justify-start">
-                {urgentImminentItems.map((item, idx) => {
-                  const hasTask = item.source === 'task' && !!item.id;
-                  return (
-                    <button 
-                      key={idx}
-                      type="button"
-                      disabled={!hasTask}
-                      onClick={() => {
-                        if (item.id) {
-                          setSelectedTaskId(item.id);
-                          window.scrollTo({ top: 300, behavior: 'smooth' });
-                        }
-                      }}
-                      className="px-3 py-1.5 rounded-2xl border text-xs flex flex-row items-center gap-2.5 shadow-xs transition duration-150"
-                      style={{ 
-                        borderColor: `${customAccent}3b`,
-                        backgroundColor: isDark ? `${customAccent}22` : `${customAccent}0e`,
-                        cursor: hasTask ? 'pointer' : 'default',
-                        transform: 'none'
-                      }}
-                      title={hasTask ? 'クリックしてお仕事ワークスペースを開く 🚀' : undefined}
-                    >
-                      <span className="font-extrabold max-w-[120px] truncate" style={{ color: customAccent }}>{item.title}</span>
-                      <span 
-                        className="text-[10px] py-0.5 px-2 rounded-full text-white font-mono shrink-0 font-bold"
-                        style={{ backgroundColor: customAccent }}
-                      >
-                        あと {item.daysLeft} 日
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/10 text-rose-500 text-[9px] font-black shrink-0">
-                        {item.reason}
-                      </span>
-                      <span className="text-[10px] text-slate-400 dark:text-indigo-200 shrink-0 font-medium">({item.detail})</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <span className="shrink-0 text-note text-accent">
+              <span className="hidden md:inline">打合せ</span>{activeAlarm.minutesLeft}分前
+            </span>
+            <span className="min-w-0 flex-1 truncate text-note">
+              {activeAlarm.title}
+              <span className="text-hojo">　{activeAlarm.clientName}</span>
+            </span>
+            <span className="num shrink-0 text-note text-hojo">{activeAlarm.timeString}</span>
+            <button
+              onClick={() => {
+                setSelectedTaskId(activeAlarm.taskId);
+                setActiveAlarm(null);
+              }}
+              className="tap hidden shrink-0 items-center text-note md:flex"
+              style={{ textDecoration: 'underline', textDecorationThickness: '0.5px' }}
+            >
+              開く
+            </button>
+            <button
+              onClick={() => setActiveAlarm(null)}
+              className="num tap-icon shrink-0 text-note text-hojo"
+              title="閉じる"
+            >
+              ×
+            </button>
           </div>
         )}
 
-        {/* Main interactive split panel - Left tasks menu, Right detailed checker */}
-        <div className="flex flex-col sm:flex-row gap-5 items-start">
-          
-          {/* Left panel: Task Lists Overview */}
-          <div className="w-full sm:w-[260px] md:w-[310px] shrink-0 space-y-4 block custom-sidebar-container">
-            
-            {/* Filter tab row - no background, clean border */}
-            <div 
-              className={`p-1 rounded-2xl border flex gap-1`}
-              style={{
-                backgroundColor: 'transparent',
-                borderColor: customStyle.useCustomColor ? `${customSub}40` : undefined
-              }}
-            >
+        {/* 打合せ・締切の注意帯。1行・塗らない・上下に青竹罫 */}
+        {urgentImminentItems.length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 py-2 md:px-12"
+            style={{ borderTop: '0.5px solid var(--ui-accent)', borderBottom: '0.5px solid var(--ui-accent)' }}
+          >
+            <span className="text-note text-accent shrink-0">
+              期限間近 {urgentImminentItems.length}件
+            </span>
+            {urgentImminentItems.map((item, idx) => (
               <button
-                id="filter-all-btn"
-                onClick={() => setFilterType('all')}
-                className={`flex-1 py-1 px-2.5 text-[11px] text-center font-bold rounded-xl cursor-pointer transition`}
-                style={{
-                  backgroundColor: filterType === 'all' 
-                    ? (isDark ? `${customAccent}25` : `${customAccent}14`) 
-                    : 'transparent',
-                  color: filterType === 'all' ? customAccent : (isDark ? '#94a3b8' : '#726d88')
-                }}
+                key={idx}
+                type="button"
+                disabled={!(item.source === 'task' && !!item.id)}
+                onClick={() => { if (item.id) setSelectedTaskId(item.id); }}
+                className="tap flex items-center gap-2 text-note"
+                style={{ cursor: item.source === 'task' && item.id ? 'pointer' : 'default' }}
               >
-                全部
-              </button>
-              <button
-                id="filter-manga-btn"
-                onClick={() => setFilterType('manga')}
-                className={`flex-1 py-1 px-2.5 text-[11px] text-center font-bold rounded-xl cursor-pointer transition`}
-                style={{
-                  backgroundColor: filterType === 'manga' 
-                    ? (isDark ? `${customAccent}25` : `${customAccent}14`) 
-                    : 'transparent',
-                  color: filterType === 'manga' ? customAccent : (isDark ? '#94a3b8' : '#726d88')
-                }}
-              >
-                マンガ
-              </button>
-              <button
-                id="filter-illust-btn"
-                onClick={() => setFilterType('illust')}
-                className={`flex-1 py-1 px-2.5 text-[11px] text-center font-bold rounded-xl cursor-pointer transition`}
-                style={{
-                  backgroundColor: filterType === 'illust' 
-                    ? (isDark ? `${customAccent}25` : `${customAccent}14`) 
-                    : 'transparent',
-                  color: filterType === 'illust' ? customAccent : (isDark ? '#94a3b8' : '#726d88')
-                }}
-              >
-                イラスト
-              </button>
-            </div>
-
-            {/* Tasks list */}
-            <div className="space-y-2.5 max-h-[640vh] overflow-y-auto px-2 py-1.5 overflow-x-hidden">
-              
-              {/* Home navigation item button to return to the top page - Completely transparent when unselected, dynamic background when selected */}
-              <button
-                id="home-dashboard-tab-btn"
-                onClick={() => setSelectedTaskId(null)}
-                className={`w-full p-3.5 rounded-2xl border text-left cursor-pointer transition-all duration-200 flex items-center justify-between gap-3 focus:outline-none focus:ring-0 ${
-                  selectedTaskId === null 
-                    ? `border-l-4 shadow-sm scale-[1.01]`
-                    : `border-slate-150 border-l-4 border-l-slate-300 dark:border-indigo-850`
-                }`}
-                style={{
-                  backgroundColor: selectedTaskId === null 
-                    ? (isDark ? `${customAccent}2a` : `${customAccent}14`)
-                    : 'transparent',
-                  borderColor: selectedTaskId === null 
-                    ? customAccent 
-                    : (isDark ? '#2a2440' : '#e2e8f0'),
-                  borderLeftColor: selectedTaskId === null 
-                    ? customAccent 
-                    : (isDark ? '#4b5563' : '#cbd5e1')
-                }}
-                title="ダッシュボード(カレンダー・TODO一覧)を表示"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="text-lg shrink-0">🏠</span>
-                  <div className="min-w-0">
-                    <span className="block text-xs font-black truncate text-slate-800 dark:text-indigo-150">
-                      ホーム / ダッシュボード
-                    </span>
-                    <span className="block text-[10px] text-slate-400 block mt-0.5">
-                      📅 カレンダー ＆ 📌 全体TODO
-                    </span>
-                  </div>
-                </div>
-                <span className="text-[10px] bg-slate-100 text-slate-500 dark:bg-indigo-950/40 dark:text-indigo-200 font-bold px-1.5 py-0.5 rounded-lg shrink-0 uppercase">
-                  HOME
+                <span className="max-w-[220px] truncate text-sumi">{item.title}</span>
+                <span className="num text-accent">
+                  {item.daysLeft < 0 ? `超過 ${Math.abs(item.daysLeft)}日` : item.daysLeft === 0 ? '本日締切' : `残 ${item.daysLeft}日`}
                 </span>
               </button>
+            ))}
+          </div>
+        )}
 
-              {/* Sidebar items separator */}
-              <div className="flex items-center gap-2 py-1 px-1">
-                <span className="block h-[1px] bg-slate-200/50 flex-1" />
-                <span className="text-[9px] font-black text-slate-450 tracking-wider">個別のワークスペース</span>
-                <span className="block h-[1px] bg-slate-200/50 flex-1" />
-              </div>
+        {/* ヘッダー画像（任意）。地の上に置く帯。枠も影も付けない */}
+        {customStyle.headerBgUrl && (
+          <div className="rule-b relative">
+            <img
+              src={customStyle.headerBgUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              onClick={() => setSelectedTaskId(null)}
+              className="h-[132px] w-full cursor-pointer select-none object-cover md:h-[184px]"
+              title="クリックで一覧に戻る"
+            />
+          </div>
+        )}
 
-              {filteredTasks.length === 0 ? (
-                <div 
-                  className="p-8 text-center rounded-2xl border-2 border-dashed"
-                  style={{
-                    backgroundColor: 'transparent',
-                    borderColor: `${customAccent}35`
-                  }}
-                >
-                  <p className="text-xs text-slate-400 font-medium">登録されているお仕事はありません</p>
-                </div>
-              ) : (
-                filteredTasks.map((task) => {
-                  const isSelected = task.id === selectedTaskId;
-                  const progressVal = getTaskProgressPercentage(task);
-
-                  // Cal days diff color and border alerts to satisfy "締め切りが近づくとタスクの色が変わる"
-                  const deadlineDate = new Date(task.deadline);
-                  const today = new Date();
-                  const oneDay = 24 * 60 * 60 * 1000;
-                  const daysLeft = Math.ceil((deadlineDate.getTime() - today.getTime()) / oneDay);
-
-                  let statusTitle = '';
-
-                  if (daysLeft <= 1) {
-                    statusTitle = '🚨直前！';
-                  } else if (daysLeft <= 3) {
-                    statusTitle = '⚠️急ぎ！';
-                  } else if (daysLeft <= 7) {
-                    statusTitle = '📅今週';
-                  } else {
-                    statusTitle = '🌴余裕';
-                  }
-
-                  return (
-                    <button
-                      id={`task-card-${task.id}`}
-                      key={task.id}
-                      onClick={() => setSelectedTaskId(task.id)}
-                      className={`w-full p-4 rounded-2xl border text-left cursor-pointer transition-all duration-200 flex flex-col justify-between border-l-4 hover:scale-[1.01] active:scale-[0.99] hover:shadow-xs focus:outline-none focus:ring-0`}
-                      style={{
-                        backgroundColor: isSelected 
-                          ? (isDark ? `${customAccent}2a` : `${customAccent}14`)
-                          : 'transparent',
-                        borderColor: isSelected 
-                          ? customAccent 
-                          : (isDark ? '#2a2440' : '#e2e8f0'),
-                        borderLeftColor: isSelected 
-                          ? customAccent 
-                          : (daysLeft <= 1 ? '#ef4444' : daysLeft <= 3 ? '#fbbf24' : (isDark ? '#4b5563' : '#cbd5e1'))
-                      }}
-                    >
-                      <div>
-                        {/* Status ribbon and task metadata */}
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] font-black tracking-wider uppercase opacity-40">
-                            {task.type === 'manga' ? `📖 マンガ (${task.totalPages}p)` : task.type === 'illust' ? '🎨 イラスト (1枚)' : '🤝 打ち合わせ'}
-                          </span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                            daysLeft <= 1 
-                              ? 'bg-rose-200 text-rose-800 dark:bg-rose-900/40 dark:text-rose-250 animate-bounce-slow' 
-                              : daysLeft <= 3
-                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-905/30'
-                                : 'bg-slate-100 text-slate-500 dark:bg-indigo-805/30 dark:text-indigo-200'
-                          }`}>
-                            {statusTitle} {daysLeft < 0 ? '終了' : `あと${daysLeft}日`}
-                          </span>
-                        </div>
-
-                        {/* Task project Title */}
-                        <h4 className={`text-sm font-black font-sans leading-tight line-clamp-1 ${
-                          isSelected ? 'text-slate-800 dark:text-indigo-150' : 'opacity-90'
-                        }`}>
-                          {task.title}
-                        </h4>
-
-                        {/* Client details & Primary deadline */}
-                        <div className="flex flex-col gap-0.5 mt-1.5">
-                          <p className="text-[11px] opacity-65 flex items-center gap-1.5">
-                            <User className="w-3 h-3 flex-shrink-0 text-slate-400 dark:text-indigo-300" />
-                            <span className="truncate">{task.clientName || '個人用（宛先なし）'}</span>
-                          </p>
-                          <p className={`text-[10px] flex items-center gap-1.5 font-bold ${
-                            daysLeft <= 1 
-                              ? 'text-rose-500 dark:text-rose-450 animate-pulse' 
-                              : daysLeft <= 3 
-                                ? 'text-amber-500 dark:text-amber-400' 
-                                : 'text-slate-500 dark:text-indigo-300'
-                          }`}>
-                            <CalendarIcon className="w-3 h-3 flex-shrink-0" />
-                            <span>原稿締切: {task.deadline}</span>
-                          </p>
-                        </div>
-
-                        {/* Manga Optional Deadlines (Plot, Name, Lineart) (Request 2) */}
-                        {task.type === 'manga' && (task.plotDeadline || task.nameDeadline || task.lineartDeadline) && (
-                          <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-dashed border-slate-100 dark:border-indigo-950/20 text-[9px] text-slate-450 dark:text-indigo-300/70">
-                            {task.plotDeadline && (
-                              <span className="bg-slate-50 dark:bg-indigo-950/40 px-1 py-0.5 rounded-sm">P: {task.plotDeadline.substring(5)}</span>
-                            )}
-                            {task.nameDeadline && (
-                              <span className="bg-slate-50 dark:bg-indigo-950/40 px-1 py-0.5 rounded-sm">N: {task.nameDeadline.substring(5)}</span>
-                            )}
-                            {task.lineartDeadline && (
-                              <span className="bg-slate-50 dark:bg-indigo-950/40 px-1 py-0.5 rounded-sm">L: {task.lineartDeadline.substring(5)}</span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Small inline Mini progress bar with lovely percentage indicator */}
-                      <div className="mt-3 w-full">
-                        <div className="flex items-center justify-between text-[10px] opacity-75 font-mono mb-1">
-                          <span>進捗状況</span>
-                          <span>{progressVal}%</span>
-                        </div>
-                        <div className="w-full h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                          <div 
-                            className={`h-full duration-550 ease-out rounded-full ${
-                              progressVal === 100 
-                                ? 'bg-linear-to-r from-pink-400 to-amber-300' 
-                                : 'bg-linear-to-r from-emerald-400 to-indigo-500'
-                            }`}
-                            style={{ width: `${progressVal}%` }}
-                          />
-                        </div>
-                      </div>
-
-                    </button>
-                  );
-                })
-              )}
+        {/* 題字欄。スマホでは題字の下に日付時刻を置き、右は名前と ＋ に縮める */}
+        <header className="rule-b flex items-end justify-between gap-4 px-4 pb-3 pt-5 md:gap-6 md:px-12 md:pb-4 md:pt-7">
+          <div className="min-w-0">
+            <div className="title-mark truncate">作業進捗tracker</div>
+            <div className="mt-1 md:hidden">
+              <HeaderClock />
             </div>
-
           </div>
 
-          {/* Right panel: Table Details & Check grid to modify task progress in absolute real-time */}
-          <div className="flex-1 min-w-0 w-full custom-content-container border-0" style={{ border: 'none' }}>
-            {selectedTaskId === null ? (
-              <div className="space-y-6">
-                
-                {/* Dashboard Welcome Block */}
-                <div 
-                  className={`p-6 rounded-3xl border-2 ${activeTheme.cardClass} relative overflow-hidden`}
-                  style={{
-                    background: `linear-gradient(135deg, ${customAccent}08, ${customSub}08)`,
-                    borderColor: `${customAccent}20`
-                  }}
-                >
-                  <div className="relative z-10 flex flex-col md:flex-row items-center gap-5 justify-between">
-                    <div>
-                      <h2 className="text-lg font-black font-sans leading-none flex items-center gap-2 custom-primary-text">
-                        <span>{customStyle.showEmojis ? '👑' : ''} {customStyle.dashboardTitle || 'クリエイティブスタジオ・ダッシュボード'}</span>
-                      </h2>
-                      <div className="text-xs text-slate-500 dark:text-indigo-200 mt-2 leading-relaxed whitespace-pre-wrap">
-                        {customStyle.dashboardContent ? customStyle.dashboardContent : (
-                          <>
-                            ようこそ！ここは作品制作の司令塔です。💡<br />
-                            サイドメニューでお仕事を選択すると、工程別（ネーム、下書き、線画など）の進捗チェック管理画面に変わります。<br />
-                            カレンダーでは締め切り、打合せのご予定、期限付きTODOが分かりやすく登録・確認できます。
-                          </>
-                        )}
+          <div className="flex shrink-0 items-end gap-3 md:gap-7">
+            <div className="hidden md:block">
+              <HeaderClock />
+            </div>
+
+            {user ? (
+              <>
+                <span className="hidden max-w-[120px] truncate text-note text-hojo md:inline">
+                  {user.displayName || 'ユーザー'}
+                </span>
+                <button onClick={handleGoogleSignOut} className="btn hidden md:inline-block" title="ログアウト">
+                  ログアウト
+                </button>
+                <button onClick={handleGoogleSignOut} className="tap flex items-center text-note text-hojo md:hidden" title="ログアウト">
+                  {user.displayName || 'ユーザー'}
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={handleGoogleSignIn} className="btn hidden md:inline-block">
+                  Googleでログイン
+                </button>
+                <button onClick={handleGoogleSignIn} className="tap flex items-center text-note text-hojo md:hidden">
+                  ログイン
+                </button>
+              </>
+            )}
+
+            {/* スマホは見た目 28px 角のまま、外側で 44px の当たり判定を確保する */}
+            <button
+              id="task-add-btn"
+              onClick={() => { setEditingTask(null); setIsTaskModalOpen(true); }}
+              className="tap flex items-center justify-center"
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              title="新規案件"
+            >
+              <span
+                className="btn btn-primary flex h-7 w-7 items-center justify-center p-0 md:hidden"
+                style={{ minHeight: 0 }}
+              >
+                ＋
+              </span>
+              <span className="btn btn-primary hidden md:inline-block">＋ 新規案件</span>
+            </button>
+            <button
+              id="setting-open-btn"
+              onClick={() => setIsSettingModalOpen(true)}
+              className="btn hidden md:inline-block"
+            >
+              設定
+            </button>
+            <button
+              onClick={() => setIsSettingModalOpen(true)}
+              className="tap flex items-center text-note text-hojo md:hidden"
+            >
+              設定
+            </button>
+          </div>
+        </header>
+
+        {/* 本体：左＝案件一覧（可変） ／ 右＝440px 締切カレンダー＋TODO */}
+        <div className="flex flex-col lg:flex-row items-stretch">
+
+          {/* ============ 左：案件一覧 ============ */}
+          <div className="min-w-0 flex-1">
+
+            {/* フィルタ行 */}
+            <div className="rule-b flex items-center justify-between px-4 py-2 md:px-12 md:py-3">
+              <div className="flex items-center gap-5">
+                {([['all', '全部'], ['manga', '漫画'], ['illust', 'イラスト']] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    id={`filter-${key}-btn`}
+                    onClick={() => setFilterType(key)}
+                    className="tap flex items-end text-note"
+                    style={
+                      filterType === key
+                        ? { color: '#262A26', borderBottom: '0.5px solid #262A26', paddingBottom: '2px' }
+                        : { color: '#838A80', paddingBottom: '2px' }
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="num text-note text-hojo">{filteredTasks.length} 件</span>
+            </div>
+
+            {/* 案件の行 */}
+            {filteredTasks.length === 0 ? (
+              <div className="px-4 py-16 md:px-12">
+                <p className="text-note text-hojo">登録されているお仕事はありません。</p>
+              </div>
+            ) : (
+              filteredTasks.map((task) => {
+                const isOpen = task.id === selectedTaskId;
+                const progressVal = getTaskProgressPercentage(task);
+                const daysLeft = daysUntil(task.deadline);
+
+                return (
+                  <div key={task.id} className="rule-b">
+                    {/* 行本体。全体がクリック可能 */}
+                    <div
+                      id={`task-card-${task.id}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedTaskId(isOpen ? null : task.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedTaskId(isOpen ? null : task.id);
+                        }
+                      }}
+                      className="cursor-pointer px-4 py-3 md:px-12 md:py-[20px]"
+                      style={{ background: isOpen ? '#EDEFEA' : 'transparent' }}
+                      onMouseEnter={(e) => { if (!isOpen) e.currentTarget.style.background = '#EDEFEA'; }}
+                      onMouseLeave={(e) => { if (!isOpen) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      {/* 1段目：［種別］＋ 作品名 ＋ 入金バッジ */}
+                      <div className="flex items-baseline gap-3">
+                        <span className="shrink-0 text-note text-hojo">
+                          ［{task.type === 'manga' ? '漫画' : task.type === 'illust' ? 'イラスト' : '打合せ'}］
+                        </span>
+                        <h4 className="mincho min-w-0 flex-1 truncate text-title leading-snug">
+                          {task.title}
+                        </h4>
+                        <DepositTag status={task.depositStatus} />
+                      </div>
+
+                      {/* 2段目：クライアント／締切／残日数／進捗 */}
+                      <div className="mt-2 flex flex-wrap items-baseline gap-x-8 gap-y-1">
+                        <span className="w-full truncate text-note text-hojo md:w-[280px] md:shrink-0">
+                          {task.clientName || '—'}
+                        </span>
+                        <span className="num text-note">
+                          締切 {formatDot(task.deadline)}
+                        </span>
+                        <DaysLeft days={daysLeft} />
+                        <span className="num text-note text-hojo">進捗 {progressVal}%</span>
                       </div>
                     </div>
 
-                    <div 
-                      className="shrink-0 flex items-center gap-2 text-xs py-2 px-3 rounded-2xl border font-bold"
-                      style={{
-                        borderColor: `${customAccent}35`,
-                        color: customAccent,
-                        backgroundColor: isDark ? `${customAccent}1b` : `${customAccent}0a`
-                      }}
-                    >
-                      <span>{customStyle.showEmojis ? '🚀' : ''} 総タスク数: {tasks.length} 件</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Main Page Central Calendar view */}
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-indigo-300 flex items-center gap-1.5">
-                      <CalendarIcon className="w-4 h-4 text-rose-500" />
-                      <span>📅 進行カレンダー & スケジュール（Google Calendar同期対応）</span>
-                    </h3>
-                  </div>
-                  <CalendarAccordion
-                    tasks={tasks}
-                    todos={todos}
-                    activeTheme={activeTheme}
-                    calendarSettings={calendarSettings}
-                    onSyncTask={handleManualSync}
-                    onSelectTaskId={setSelectedTaskId}
-                    customStyle={customStyle}
-                    onCalendarSettingsChange={handleCalendarSettingsChange}
-                    onConnect={handleGoogleSignIn}
-                  />
-                </div>
-
-                {/* Main Page Central TODO List Manager */}
-                <div className={`p-6 rounded-3xl border-2 ${activeTheme.cardClass} space-y-4`}>
-                  <div className="flex items-center justify-between pb-3 border-b border-rose-100/20">
-                    <h3 className="text-sm font-black text-slate-800 dark:text-indigo-100 flex items-center gap-2">
-                      <CheckSquare className="w-5 h-5 text-rose-400" />
-                      <span>📌 コミック・イラスト用TODO & 期限付きやること</span>
-                    </h3>
-                    <span className="text-[10px] bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 font-extrabold px-2 py-0.5 rounded-lg">
-                      {todos.filter(t => !t.completed).length} 件未完了
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Add todo box */}
-                    <div className="space-y-4 p-4 rounded-2xl bg-slate-50/50 dark:bg-indigo-950/10 border border-slate-150/60 dark:border-indigo-850/50">
-                      <h4 className="text-xs font-bold text-slate-600 dark:text-indigo-200">✨ やることをサクッと追加</h4>
-                      <form 
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          if (!newTodoTitle.trim()) return;
-                          handleAddTodo(newTodoTitle, newTodoDeadline || undefined);
-                          setNewTodoTitle('');
-                          setNewTodoDeadline('');
-                        }}
-                        className="space-y-2.5"
-                      >
-                        <input
-                          id="dash-todo-title-input"
-                          type="text"
-                          placeholder="タスク内容を入力してね..."
-                          value={newTodoTitle}
-                          onChange={(e) => setNewTodoTitle(e.target.value)}
-                          className={`w-full text-xs px-3 py-2 rounded-xl focus:outline-hidden focus:ring-1 border bg-white dark:bg-indigo-950/40 border-slate-200 dark:border-indigo-800 text-slate-900 dark:text-white focus:ring-rose-455`}
+                    {/* 行展開＝進行表 */}
+                    {isOpen && (
+                      <div className="rule-t" style={{ background: '#EDEFEA' }}>
+                        <ProgressTable
+                          task={task}
+                          tasks={tasks}
+                          onSelectTaskId={setSelectedTaskId}
+                                      onToggleCell={handleToggleCell}
+                          onEditTask={(t) => { setEditingTask(t); setIsTaskModalOpen(true); }}
+                          onDeleteTask={handleDeleteTask}
+                          onSyncCalendar={handleManualSync}
+                          calendarConnected={!!calendarSettings.accessToken}
+                          customStyle={customStyle}
+                          onBackToList={() => setSelectedTaskId(null)}
                         />
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            id="dash-todo-deadline-input"
-                            type="date"
-                            value={newTodoDeadline}
-                            onChange={(e) => setNewTodoDeadline(e.target.value)}
-                            className="text-xs px-2.5 py-1.5 rounded-xl border bg-white dark:bg-indigo-950/40 border-slate-200 dark:border-indigo-805 text-slate-900 dark:text-white"
-                          />
-                          <button
-                            id="dash-todo-submit-btn"
-                            type="submit"
-                            className={`w-full py-1.5 px-3 rounded-xl text-xs font-bold cursor-pointer transition ${customStyle.useCustomColor ? 'custom-primary-bg' : activeTheme.primaryClass}`}
-                          >
-                            追加する
-                          </button>
-                        </div>
-                      </form>
-                      <p className="text-[10px] text-slate-400 leading-relaxed font-semibold">
-                        ※日付をいれると、Googleカレンダーとも連携でき、締切3日前になると自動でアラーム警告に反映されます！
-                      </p>
-                    </div>
-
-                    {/* Todo mapping board */}
-                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                      {todos.length === 0 ? (
-                        <div className="py-12 text-center border border-dashed border-slate-150/60 dark:border-indigo-850 rounded-2xl">
-                          <p className="text-xs text-slate-400 font-semibold">現在、やることTODOはありません！🍵</p>
-                        </div>
-                      ) : (
-                        todos.map((todo) => {
-                          // check deadline color
-                          let isNearDeadline = false;
-                          let daysLeft = 99;
-                          if (todo.deadline && !todo.completed) {
-                            const dl = new Date(todo.deadline);
-                            const tdy = new Date();
-                            const diff = dl.getTime() - tdy.getTime();
-                            daysLeft = Math.ceil(diff / (24 * 60 * 60 * 1000));
-                            if (daysLeft <= 3) isNearDeadline = true;
-                          }
-
-                          return (
-                            <div 
-                              key={todo.id}
-                              className={`p-3 rounded-2xl border text-xs flex items-center justify-between gap-2 duration-150 ${
-                                todo.completed 
-                                  ? 'bg-slate-50/50 dark:bg-indigo-950/10 opacity-60 border-slate-100 dark:border-transparent' 
-                                  : isNearDeadline 
-                                    ? 'bg-rose-500/10 border-rose-300 animate-pulse-slow' 
-                                    : 'bg-white dark:bg-indigo-900/30 border-slate-150 dark:border-indigo-800'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <button
-                                  id={`dash-todo-toggle-${todo.id}`}
-                                  type="button"
-                                  onClick={() => handleToggleTodo(todo.id)}
-                                  className="text-rose-455 hover:text-rose-500 cursor-pointer shrink-0"
-                                >
-                                  {todo.completed ? (
-                                    <CheckSquare className="w-4 h-4 text-emerald-500 fill-emerald-500/10" />
-                                  ) : (
-                                    <Square className="w-4 h-4 text-slate-300 dark:text-indigo-805" />
-                                  )}
-                                </button>
-                                <div className="min-w-0">
-                                  <span className={`block font-bold leading-none truncate ${todo.completed ? 'line-through text-slate-400' : 'text-slate-800 dark:text-indigo-150'}`}>
-                                    {todo.title}
-                                  </span>
-                                  {todo.deadline && (
-                                    <span className={`text-[10px] font-semibold flex items-center gap-0.5 mt-1 ${isNearDeadline ? 'text-rose-500' : 'text-slate-400'}`}>
-                                      <CalendarIcon className="w-3 h-3 shrink-0" />
-                                      {todo.deadline}まで（{daysLeft < 0 ? '期限超過' : `あと ${daysLeft}日`}）
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1 shrink-0">
-                                {!todo.completed && todo.deadline && !todo.calendarEventId && calendarSettings.accessToken && (
-                                  <button
-                                    id={`dash-todo-sync-${todo.id}`}
-                                    onClick={() => handleSyncTodoEvent(todo)}
-                                    className="p-1 rounded-lg text-slate-450 hover:bg-slate-100 hover:text-indigo-500 dark:hover:bg-indigo-900/50 cursor-pointer"
-                                    title="Googleカレンダーに同期"
-                                  >
-                                    <RefreshCw className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                                <button
-                                  id={`dash-todo-del-${todo.id}`}
-                                  onClick={() => handleDeleteTodo(todo.id)}
-                                  className="p-1 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-950/30 cursor-pointer"
-                                  title="削除"
-                                >
-                                  <Trash className="w-3.5 h-3.5 text-slate-400 hover:text-rose-500" />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-
-              </div>
-            ) : (
-              <ProgressTable
-                task={selectedTask}
-                tasks={tasks}
-                onSelectTaskId={setSelectedTaskId}
-                activeTheme={activeTheme}
-                onToggleCell={handleToggleCell}
-                onEditTask={(t) => {
-                  setEditingTask(t);
-                  setIsTaskModalOpen(true);
-                }}
-                onDeleteTask={handleDeleteTask}
-                onSyncCalendar={handleManualSync}
-                calendarConnected={!!calendarSettings.accessToken}
-                customStyle={customStyle}
-                onBackToList={() => setSelectedTaskId(null)}
-              />
+                );
+              })
             )}
           </div>
 
-        </div>
+          {/* ============ 右：締切カレンダー＋TODO ============ */}
+          <aside className="w-full shrink-0 lg:w-[440px] lg:border-l-[0.5px] lg:border-l-kei">
+            {/* 締切カレンダー。スマホでは一覧の下に縦積みし、欄の頭に墨罫を引く */}
+            <section className="rule-t-sumi rule-t rule-b px-4 py-5 md:px-8 lg:rule-t-none">
+              <h3 className="mb-4 text-note text-hojo">締切カレンダー</h3>
+              <CalendarAccordion
+                tasks={tasks}
+                todos={todos}
+                  calendarSettings={calendarSettings}
+                onSyncTask={handleManualSync}
+                onSelectTaskId={setSelectedTaskId}
+                customStyle={customStyle}
+                onCalendarSettingsChange={handleCalendarSettingsChange}
+                onConnect={handleGoogleSignIn}
+              />
+            </section>
 
+            {/* TODO */}
+            <section className="rule-t-sumi rule-t px-4 py-5 md:px-8 lg:rule-t-none">
+              <div className="mb-4 flex items-baseline justify-between">
+                <h3 className="text-note text-hojo">TODO</h3>
+                <span className="num text-note text-hojo">
+                  {todos.filter((t) => t.completed).length} / {todos.length}
+                </span>
+              </div>
+
+              {/* 追加欄。罫線の上に直接置く */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newTodoTitle.trim()) return;
+                  handleAddTodo(newTodoTitle, newTodoDeadline || undefined);
+                  setNewTodoTitle('');
+                  setNewTodoDeadline('');
+                }}
+                className="rule-b mb-4 flex items-center gap-3 pb-2"
+              >
+                <input
+                  id="dash-todo-title-input"
+                  type="text"
+                  placeholder="やることを書く"
+                  value={newTodoTitle}
+                  onChange={(e) => setNewTodoTitle(e.target.value)}
+                  className="field min-w-0 flex-1 text-note"
+                />
+                <input
+                  id="dash-todo-deadline-input"
+                  type="date"
+                  value={newTodoDeadline}
+                  onChange={(e) => setNewTodoDeadline(e.target.value)}
+                  className="field field-num w-[124px] shrink-0 text-hojo"
+                />
+                <button id="dash-todo-submit-btn" type="submit" className="btn shrink-0">
+                  追加
+                </button>
+              </form>
+
+              {todos.length === 0 ? (
+                <p className="text-note text-hojo">やることはありません。</p>
+              ) : (
+                <ul>
+                  {todos.map((todo) => (
+                    <li key={todo.id} className="rule-b flex items-center gap-3">
+                      {/* チェックは □ / ■ の文字。行クリックでトグル */}
+                      <button
+                        id={`dash-todo-toggle-${todo.id}`}
+                        type="button"
+                        onClick={() => handleToggleTodo(todo.id)}
+                        className="tap flex min-w-0 flex-1 items-center py-3 text-left md:py-[10px]"
+                      >
+                        <span className={`text-note ${todo.completed ? 'text-hojo' : 'text-sumi'}`}>
+                          <span className="mr-2">{todo.completed ? '■' : '□'}</span>
+                          <span className={todo.completed ? 'line-through' : ''}>{todo.title}</span>
+                        </span>
+                      </button>
+
+                      {todo.deadline && (
+                        <span className="num shrink-0 text-note text-hojo">
+                          {formatMd(todo.deadline)}
+                        </span>
+                      )}
+
+                      {!todo.completed && todo.deadline && !todo.calendarEventId && calendarSettings.accessToken && (
+                        <button
+                          id={`dash-todo-sync-${todo.id}`}
+                          onClick={() => handleSyncTodoEvent(todo)}
+                          className="tap-icon shrink-0 text-hojo"
+                          title="Googleカレンダーに登録"
+                        >
+                          <RefreshCw className="h-4 w-4" strokeWidth={1.25} />
+                        </button>
+                      )}
+                      <button
+                        id={`dash-todo-del-${todo.id}`}
+                        onClick={() => handleDeleteTodo(todo.id)}
+                        className="tap-icon shrink-0 text-hojo"
+                        title="削除"
+                      >
+                        <Trash className="h-4 w-4" strokeWidth={1.25} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </aside>
+
+        </div>
       </div>
 
       {/* --- Pop-up modals --- */}
       
       {/* 1. Settings Menu customization */}
       {isSettingModalOpen && (
+        <Suspense fallback={null}>
         <SettingModal
           isOpen={isSettingModalOpen}
           onClose={() => setIsSettingModalOpen(false)}
-          activeTheme={activeTheme}
-          onThemeChange={handleThemeChange}
           calendarSettings={calendarSettings}
           onCalendarSettingsChange={handleCalendarSettingsChange}
           onLogout={handleLogout}
@@ -2329,10 +1822,12 @@ export default function App() {
             }
           }}
         />
+        </Suspense>
       )}
 
       {/* 2. Task Form creation and Modification popped up */}
       {isTaskModalOpen && (
+        <Suspense fallback={null}>
         <TaskFormModal
           isOpen={isTaskModalOpen}
           onClose={() => {
@@ -2340,20 +1835,22 @@ export default function App() {
             setEditingTask(null);
           }}
           onSave={handleSaveTask}
+          onDelete={handleDeleteTask}
           editingTask={editingTask}
-          activeTheme={activeTheme}
           customStyle={customStyle}
         />
+        </Suspense>
       )}
 
       {/* 3. Draggable stickers overlay layer */}
       {customStyle.showStickers !== false && (
+        <Suspense fallback={null}>
         <StickerOverlay
           stickers={stickers}
           onStickersChange={handleStickersChange}
-          activeTheme={activeTheme}
           customStyle={customStyle}
         />
+        </Suspense>
       )}
 
     </div>

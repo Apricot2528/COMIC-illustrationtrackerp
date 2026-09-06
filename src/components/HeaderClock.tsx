@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 
 interface HeaderClockProps {
-  isDark: boolean;
+  /** 旧デザインの名残。現在は配色が固定のため参照しない */
+  isDark?: boolean;
   alwaysWhite?: boolean;
 }
 
-export function HeaderClock({ isDark, alwaysWhite = false }: HeaderClockProps) {
+/** 題字欄の日付＋時刻。等幅 12px・補助色、時刻は1秒更新 */
+export function HeaderClock(_props: HeaderClockProps) {
   const [dateTime, setDateTime] = useState(new Date());
 
   useEffect(() => {
@@ -15,36 +17,21 @@ export function HeaderClock({ isDark, alwaysWhite = false }: HeaderClockProps) {
     return () => clearInterval(timer);
   }, []);
 
-  const formattedDate = dateTime.toLocaleDateString('ja-JP', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'short'
-  });
-  
+  const y = dateTime.getFullYear();
+  const m = String(dateTime.getMonth() + 1).padStart(2, '0');
+  const d = String(dateTime.getDate()).padStart(2, '0');
+  const w = ['日', '月', '火', '水', '木', '金', '土'][dateTime.getDay()];
+
   const formattedTime = dateTime.toLocaleTimeString('ja-JP', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false
+    hour12: false,
   });
 
-  const dateColorClass = alwaysWhite 
-    ? 'text-slate-300' 
-    : 'text-slate-400 dark:text-indigo-300';
-    
-  const timeColorClass = alwaysWhite
-    ? 'text-white'
-    : isDark ? 'text-indigo-100' : 'text-slate-800 dark:text-indigo-105';
-
   return (
-    <div className="text-right select-none shrink-0">
-      <div className={`text-xs md:text-sm font-bold tracking-wider ${dateColorClass}`}>
-        {formattedDate}
-      </div>
-      <div className={`text-3xl md:text-4xl lg:text-5xl font-mono font-black mt-1 leading-none tracking-tight ${timeColorClass}`}>
-        {formattedTime}
-      </div>
-    </div>
+    <span className="num select-none whitespace-nowrap text-note text-hojo">
+      {y}.{m}.{d}（{w}）　{formattedTime}
+    </span>
   );
 }

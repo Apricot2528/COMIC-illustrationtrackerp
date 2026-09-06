@@ -4,25 +4,85 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Task, TaskType, DepositStatus, ThemeConfig, CustomStyleConfig } from '../types';
-import { X, Plus, Edit2, Calendar, FileText, User, DollarSign, BookOpen, AlertCircle, Sparkles } from 'lucide-react';
+import {Task, TaskType, DepositStatus, CustomStyleConfig } from '../types';
+import { toast } from '../utils/toast';
 
 interface TaskFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (task: Omit<Task, 'id' | 'createdAt' | 'steps'> & { id?: string }) => void;
+  onDelete?: (taskId: string) => void;
   editingTask?: Task | null;
-  activeTheme: ThemeConfig;
   customStyle?: CustomStyleConfig;
+}
+
+/** 締切までの日数。時刻は切り捨てて日単位で数える */
+function daysUntil(dateStr: string): number | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  const due = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const n = new Date();
+  const today = new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  return Math.round((due.getTime() - today.getTime()) / 86400000);
+}
+
+/** 罫線で区切った 1 行。ラベル 96px（スマホ 76px）・12px 補助 */
+function Row({
+  label,
+  children,
+  right,
+}: {
+  label: string;
+  children: React.ReactNode;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className="rule-b flex items-center gap-3 py-[11px] md:py-3">
+      <span className="w-[76px] shrink-0 text-note text-hojo md:w-[96px]">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+      {right && <div className="shrink-0">{right}</div>}
+    </div>
+  );
+}
+
+/** 見出し（基本・日程・工程・経理・備考） */
+function SectionHead({ children }: { children: React.ReactNode }) {
+  return <h3 className="mt-7 mb-1 text-note text-hojo">{children}</h3>;
+}
+
+/** 2択・3択の枠線ボタン。選択＝枠墨、非選択＝枠罫色・文字補助 */
+function Choice<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { v: T; label: string }[];
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {options.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          onClick={() => onChange(o.v)}
+          className={`btn ${value === o.v ? 'btn-primary' : ''}`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export default function TaskFormModal({
   isOpen,
   onClose,
   onSave,
+  onDelete,
   editingTask,
-  activeTheme,
-  customStyle
 }: TaskFormModalProps) {
   const [type, setType] = useState<TaskType>('manga');
   const [title, setTitle] = useState('');
@@ -35,7 +95,6 @@ export default function TaskFormModal({
   const [meetingDate, setMeetingDate] = useState('');
   const [totalPages, setTotalPages] = useState<number>(4);
   const [notes, setNotes] = useState('');
-  const [syncCalendar, setSyncCalendar] = useState<boolean>(true);
 
   useEffect(() => {
     if (isOpen) {
@@ -52,34 +111,31 @@ export default function TaskFormModal({
         setTotalPages(editingTask.totalPages || (editingTask.type === 'manga' ? 4 : 1));
         setNotes(editingTask.notes || '');
       } else {
-        // Reset to default
         setType('manga');
         setTitle('');
         setClientName('');
         setDepositStatus('none');
-        
-        // Default deadline: +1 week
+
         const oneWeekLater = new Date();
         oneWeekLater.setDate(oneWeekLater.getDate() + 7);
         setDeadline(oneWeekLater.toISOString().substring(0, 10));
         setPlotDeadline('');
         setNameDeadline('');
         setLineartDeadline('');
-        
+
         setMeetingDate('');
         setTotalPages(4);
         setNotes('');
-        setSyncCalendar(true);
       }
     }
   }, [editingTask, isOpen]);
 
-  // If user switches to illust, totalPages is locked to 1
+  // イラストはページ数を 1 に固定する
   useEffect(() => {
     if (type === 'illust') {
       setTotalPages(1);
     } else if (type === 'manga' && totalPages === 1) {
-      setTotalPages(4); // Default to standard manga draft size
+      setTotalPages(4);
     }
   }, [type]);
 
@@ -88,23 +144,20 @@ export default function TaskFormModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) {
-      alert('タスクのタイトルを入力してください！🌟');
+      toast('作品名を入力してください', 'error');
       return;
     }
 
     let finalDeadline = deadline;
     if (type === 'meeting') {
       if (!meetingDate) {
-        alert('打合せ日時を設定してください！📅');
+        toast('打合せ日時を設定してください', 'error');
         return;
       }
-      // Automap date part of meetingDate to deadline
       finalDeadline = meetingDate.substring(0, 10);
-    } else {
-      if (!deadline) {
-        alert('締切日を設定してください！📅');
-        return;
-      }
+    } else if (!deadline) {
+      toast('締切日を設定してください', 'error');
+      return;
     }
 
     onSave({
@@ -121,346 +174,246 @@ export default function TaskFormModal({
       totalPages: type === 'manga' ? totalPages : 1,
       notes: notes.trim(),
       calendarEventId: editingTask?.calendarEventId,
-      meetingEventId: editingTask?.meetingEventId
+      meetingEventId: editingTask?.meetingEventId,
     });
 
     onClose();
   };
 
-  const isDark = activeTheme.id === 'cosmic' || !!customStyle?.darkMode;
+  const days = daysUntil(type === 'meeting' ? meetingDate.substring(0, 10) : deadline);
+  const stepsLabel =
+    type === 'manga'
+      ? 'ネーム／下書き／線画／仕上げ'
+      : type === 'illust'
+        ? 'ラフ／下書き／線画／着色／仕上げ（1行のみ表示）'
+        : '事前準備／ラフ・資料提示／日程・見積調整／決定事項メモ／お礼・共有';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-      <div 
-        id="task-form-container"
-        className={`w-full max-w-md rounded-3xl border-2 p-6 overflow-hidden ${activeTheme.cardClass} duration-300 transform scale-100 shadow-xl`}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-rose-100/40">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-amber-500 animate-pulse" />
-            <span className={`text-lg font-bold font-sans ${isDark ? 'text-indigo-100' : 'text-slate-800'}`}>
-              {type === 'meeting' 
-                ? (editingTask ? '🤝 打ち合わせ予定を編集' : '🤝 新しい打ち合わせを追加')
-                : (editingTask ? '🎨 制作タスクを編集' : '✨ 新しい制作タスクを追加')
-              }
-            </span>
-          </div>
-          <button 
-            id="close-task-modal-btn"
-            onClick={onClose}
-            className="p-1.5 rounded-full hover:bg-slate-100 dark:hover:bg-indigo-850/60 duration-200 cursor-pointer"
-          >
-            <X className="w-5 h-5 text-slate-400" />
-          </button>
+    // 背後は暗くしない・ぼかさない・スライドさせない。右から出る固定パネル
+    <aside
+      id="task-form-container"
+      className="fixed right-0 top-0 z-50 flex h-full w-full flex-col bg-paper md:w-[520px]"
+      style={{ borderLeft: '0.5px solid #262A26' }}
+      role="dialog"
+      aria-label={editingTask ? '案件を編集' : '案件を新規'}
+    >
+      {/* 見出し */}
+      <div className="rule-b rule-b-sumi flex items-baseline justify-between gap-4 px-5 pb-3 pt-5 md:px-8">
+        <div className="min-w-0">
+          <h2 className="mincho text-title leading-none">
+            {editingTask ? '案件を編集' : '案件を新規'}
+          </h2>
+          {editingTask && (
+            <p className="mt-1 truncate text-note text-hojo">{editingTask.title}</p>
+          )}
         </div>
+        <button
+          id="close-task-modal-btn"
+          onClick={onClose}
+          className="num tap-icon shrink-0 text-body text-hojo"
+          title="閉じる"
+        >
+          ×
+        </button>
+      </div>
 
-        {/* Content form */}
-        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-          
-          {/* Mode Selector */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5">制作・活動モード選択</label>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                id="task-type-manga-btn"
-                type="button"
-                onClick={() => setType('manga')}
-                className={`py-2 px-1 rounded-xl border-2 text-[10.5px] font-bold font-sans transition-all duration-200 cursor-pointer ${
-                  type === 'manga'
-                    ? 'border-indigo-400 bg-indigo-500/10 text-indigo-500 dark:text-indigo-300 shadow-xs'
-                    : 'border-slate-150 bg-white hover:bg-slate-50 dark:bg-indigo-950/20 text-slate-400 dark:border-indigo-800'
-                }`}
-              >
-                📖 マンガ
-              </button>
-              <button
-                id="task-type-illust-btn"
-                type="button"
-                onClick={() => setType('illust')}
-                className={`py-2 px-1 rounded-xl border-2 text-[10.5px] font-bold font-sans transition-all duration-200 cursor-pointer ${
-                  type === 'illust'
-                    ? 'border-emerald-400 bg-emerald-500/10 text-emerald-500 dark:text-emerald-300 shadow-xs'
-                    : 'border-slate-150 bg-white hover:bg-slate-50 dark:bg-indigo-950/20 text-slate-400 dark:border-indigo-800'
-                }`}
-              >
-                🎨 イラスト
-              </button>
-              <button
-                id="task-type-meeting-btn"
-                type="button"
-                onClick={() => setType('meeting')}
-                className={`py-2 px-1 rounded-xl border-2 text-[10.5px] font-bold font-sans transition-all duration-200 cursor-pointer ${
-                  type === 'meeting'
-                    ? 'border-rose-400 bg-rose-500/10 text-rose-500 dark:text-rose-300 shadow-xs'
-                    : 'border-slate-150 bg-white hover:bg-slate-50 dark:bg-indigo-950/20 text-slate-400 dark:border-indigo-800'
-                }`}
-              >
-                🤝 打ち合わせ
-              </button>
-            </div>
-          </div>
+      {/* 本体 */}
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6 md:px-8">
+          <SectionHead>基本</SectionHead>
 
-          {/* Title input */}
-          <div className="relative">
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-              <FileText className="w-3.5 h-3.5" /> 
-              <span>{type === 'meeting' ? '打ち合わせ件名 / 用件' : '作品タイトル'}</span>
-              <span className="text-rose-500">*</span>
-            </label>
+          <Row label="種別">
+            <Choice
+              value={type}
+              onChange={(v) => setType(v)}
+              options={[
+                { v: 'manga' as TaskType, label: '漫画' },
+                { v: 'illust' as TaskType, label: 'イラスト' },
+                { v: 'meeting' as TaskType, label: '打合せ' },
+              ]}
+            />
+          </Row>
+
+          <Row label="作品名">
             <input
               id="task-title-input"
               type="text"
-              required
-              placeholder={type === 'meeting' ? '例: キャラデザインの方向性打合せ' : '例: コミケ用合同誌 / 1枚絵 commission'}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border focus:outline-hidden focus:ring-1 ${
-                isDark 
-                  ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                  : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-              }`}
+              className="field mincho w-full text-title"
+              placeholder="作品名"
             />
-          </div>
+          </Row>
 
-          {/* Client Name Input */}
-          <div className="relative">
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-              <User className="w-3.5 h-3.5" /> 
-              <span>{type === 'meeting' ? '打ち合わせの相手 / クライアント名' : 'クライアント / お取引先様'}</span>
-            </label>
+          <Row label="クライアント">
             <input
-              id="task-client-input"
               type="text"
-              placeholder={type === 'meeting' ? '例: ○○出版 担当A様' : '例: ○○出版、趣味、Skeb 宛先など'}
               value={clientName}
               onChange={(e) => setClientName(e.target.value)}
-              className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border focus:outline-hidden focus:ring-1 ${
-                isDark 
-                  ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                  : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-              }`}
+              className="field w-full"
+              placeholder="—"
             />
-          </div>
+          </Row>
 
-          {/* Deposit Status and Page Count side-by-side - ONLY show if not meeting type */}
+          <SectionHead>日程</SectionHead>
+
           {type !== 'meeting' && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-                  <DollarSign className="w-3.5 h-3.5" /> ご入金状況
-                </label>
-                <select
-                  id="task-deposit-select"
-                  value={depositStatus}
-                  onChange={(e) => setDepositStatus(e.target.value as DepositStatus)}
-                  className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border focus:outline-hidden focus:ring-1 cursor-pointer ${
-                    isDark 
-                      ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                      : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                  }`}
-                >
-                  <option value="none">支払いなし（趣味等）</option>
-                  <option value="unpaid">📭 未入金</option>
-                  <option value="paid">🌸 ご入金済み</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-                  <BookOpen className="w-3.5 h-3.5" /> 進行ページ数/枚数
-                </label>
-                {type === 'manga' ? (
-                  <input
-                    id="task-pages-input"
-                    type="number"
-                    min={1}
-                    max={400}
-                    value={totalPages}
-                    onChange={(e) => setTotalPages(parseInt(e.target.value) || 1)}
-                    className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border focus:outline-hidden focus:ring-1 ${
-                      isDark 
-                        ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                        : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                    }`}
-                  />
+            <Row
+              label="締切"
+              right={
+                days === null ? null : days < 0 ? (
+                  <span className="num tag tag-fill">超過 {Math.abs(days)}日</span>
+                ) : days === 0 ? (
+                  <span className="num text-note text-accent">本日締切</span>
+                ) : days <= 7 ? (
+                  <span className="num text-note text-accent">残 {days}日</span>
                 ) : (
-                  <div className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border ${
-                    isDark ? 'bg-indigo-950/20 border-indigo-805 text-indigo-300' : 'bg-slate-100 border-slate-200 text-slate-500'
-                  } flex items-center font-semibold`}>
-                    ✏️ 1枚イラストに固定
-                  </div>
-                )}
-              </div>
-            </div>
+                  <span className="num text-note">残 {days}日</span>
+                )
+              }
+            >
+              <input
+                type="date"
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+                className="field field-num w-full"
+              />
+            </Row>
           )}
 
-          {/* Dates & meetings */}
-          <div className="grid grid-cols-1 gap-4">
-            {type === 'meeting' ? (
-              <div>
-                <label className="block text-xs font-semibold text-rose-400 mb-1.5 flex items-center gap-1">
-                  <Calendar className="w-3.5 h-3.5 text-rose-400" /> 🤝 打ち合わせ日時・時間 <span className="text-rose-500">*</span>
-                </label>
+          <Row
+            label="打合せ"
+            right={
+              type === 'meeting' && days !== null ? (
+                days < 0 ? (
+                  <span className="num tag tag-fill">超過 {Math.abs(days)}日</span>
+                ) : days === 0 ? (
+                  <span className="num text-note text-accent">本日</span>
+                ) : (
+                  <span className={`num text-note ${days <= 7 ? 'text-accent' : ''}`}>残 {days}日</span>
+                )
+              ) : null
+            }
+          >
+            <input
+              type="datetime-local"
+              value={meetingDate}
+              onChange={(e) => setMeetingDate(e.target.value)}
+              className="field field-num w-full"
+            />
+          </Row>
+
+          {type === 'manga' && (
+            <>
+              <Row label="プロット締切">
                 <input
-                  id="task-meeting-input"
-                  type="datetime-local"
-                  required
-                  value={meetingDate}
-                  onChange={(e) => setMeetingDate(e.target.value)}
-                  className={`w-full text-xs px-3.5 py-2.5 rounded-2xl border focus:outline-hidden focus:ring-1 cursor-pointer ${
-                    isDark 
-                      ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                      : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                  }`}
+                  type="date"
+                  value={plotDeadline}
+                  onChange={(e) => setPlotDeadline(e.target.value)}
+                  className="field field-num w-full"
                 />
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5 text-rose-400" /> 原稿締切日 <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      id="task-deadline-input"
-                      type="date"
-                      required
-                      value={deadline}
-                      onChange={(e) => setDeadline(e.target.value)}
-                      className={`w-full text-xs px-3 py-2 rounded-2xl border focus:outline-hidden focus:ring-1 cursor-pointer ${
-                        isDark 
-                          ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                          : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                      }`}
-                    />
-                  </div>
+              </Row>
+              <Row label="ネーム締切">
+                <input
+                  type="date"
+                  value={nameDeadline}
+                  onChange={(e) => setNameDeadline(e.target.value)}
+                  className="field field-num w-full"
+                />
+              </Row>
+              <Row label="線画締切">
+                <input
+                  type="date"
+                  value={lineartDeadline}
+                  onChange={(e) => setLineartDeadline(e.target.value)}
+                  className="field field-num w-full"
+                />
+              </Row>
+            </>
+          )}
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1">
-                      🤝 進捗打合せ予定
-                    </label>
-                    <input
-                      id="task-meeting-input-other"
-                      type="datetime-local"
-                      value={meetingDate}
-                      onChange={(e) => setMeetingDate(e.target.value)}
-                      className={`w-full text-xs px-3 py-2 rounded-2xl border focus:outline-hidden focus:ring-1 cursor-pointer ${
-                        isDark 
-                          ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                          : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                      }`}
-                    />
-                  </div>
-                </div>
+          <SectionHead>工程</SectionHead>
 
-                {type === 'manga' && (
-                  <div className="p-3.5 rounded-2xl border border-dashed border-slate-200 dark:border-indigo-805 bg-slate-50/50 dark:bg-indigo-950/20 space-y-2.5">
-                    <span className="block text-[10.5px] font-black text-slate-450 uppercase tracking-wide">📐 各種オプション締め切り（任意項目）</span>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">プロット締切</label>
-                        <input
-                          id="task-plot-deadline-input"
-                          type="date"
-                          value={plotDeadline}
-                          onChange={(e) => setPlotDeadline(e.target.value)}
-                          className={`w-full text-[11px] px-2 py-1.5 rounded-xl border focus:outline-hidden ${
-                            isDark 
-                              ? 'bg-indigo-950/60 border-indigo-750 text-white focus:ring-indigo-400' 
-                              : 'bg-white border-slate-200 text-slate-900 focus:ring-rose-400'
-                          }`}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">ネーム締切</label>
-                        <input
-                          id="task-name-deadline-input"
-                          type="date"
-                          value={nameDeadline}
-                          onChange={(e) => setNameDeadline(e.target.value)}
-                          className={`w-full text-[11px] px-2 py-1.5 rounded-xl border focus:outline-hidden ${
-                            isDark 
-                              ? 'bg-indigo-950/60 border-indigo-750 text-white focus:ring-indigo-400' 
-                              : 'bg-white border-slate-200 text-slate-900 focus:ring-rose-400'
-                          }`}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">線画締切</label>
-                        <input
-                          id="task-lineart-deadline-input"
-                          type="date"
-                          value={lineartDeadline}
-                          onChange={(e) => setLineartDeadline(e.target.value)}
-                          className={`w-full text-[11px] px-2 py-1.5 rounded-xl border focus:outline-hidden ${
-                            isDark 
-                              ? 'bg-indigo-950/60 border-indigo-750 text-white focus:ring-indigo-400' 
-                              : 'bg-white border-slate-200 text-slate-900 focus:ring-rose-400'
-                          }`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <Row label="構成">
+            <span className="text-note text-hojo">{stepsLabel}</span>
+          </Row>
 
-          {/* Notes description */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5">
-              {type === 'meeting' ? '打ち合わせのメモ / 要点アジェンダ' : '作品のメモ、制作詳細'}
-            </label>
+          {type === 'manga' && (
+            <Row label="ページ数" right={<span className="text-note text-hojo">行をこの数だけつくる</span>}>
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={totalPages}
+                onChange={(e) => setTotalPages(Math.max(1, Number(e.target.value) || 1))}
+                className="field field-num w-[80px]"
+              />
+            </Row>
+          )}
+
+          {type !== 'meeting' && (
+            <>
+              <SectionHead>経理</SectionHead>
+              <Row label="入金">
+                <Choice
+                  value={depositStatus}
+                  onChange={(v) => setDepositStatus(v)}
+                  options={[
+                    { v: 'unpaid' as DepositStatus, label: '未' },
+                    { v: 'paid' as DepositStatus, label: '済' },
+                    { v: 'none' as DepositStatus, label: 'なし' },
+                  ]}
+                />
+              </Row>
+            </>
+          )}
+
+          <SectionHead>備考</SectionHead>
+          <div className="py-3">
             <textarea
-              id="task-notes-textarea"
-              placeholder={type === 'meeting' 
-                ? "アジェンダ、見積もり、決定事項、アラームお知らせで確認する要点をメモ..." 
-                : "ネームラフの方向性や、キャラクター設定、色の指定など、イベント登録される詳細メモを記入..."}
-              rows={3}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className={`w-full text-xs px-3.5 py-2 rounded-2xl border focus:outline-hidden focus:ring-1 resize-none ${
-                isDark 
-                  ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                  : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-              }`}
+              rows={4}
+              className="w-full text-note leading-[1.8]"
+              style={{
+                border: '0.5px solid #D7DAD3',
+                borderRadius: '2px',
+                padding: '8px',
+                background: 'transparent',
+                color: '#262A26',
+                resize: 'none',
+                outline: 'none',
+              }}
+              placeholder="—"
             />
           </div>
+        </div>
 
-          <div className="flex items-center gap-2 pt-1">
-            <input
-              id="sync-calendar-checkbox"
-              type="checkbox"
-              checked={syncCalendar}
-              onChange={(e) => setSyncCalendar(e.target.checked)}
-              className="accent-pink-500 rounded border-slate-300 cursor-pointer w-4 h-4"
-            />
-            <label htmlFor="sync-calendar-checkbox" className="text-xs text-slate-500 dark:text-indigo-200 cursor-pointer font-medium">
-              Google カレンダーと自動連携・同期する
-            </label>
-          </div>
-
-          {/* Form Actions */}
-          <div className="pt-3 border-t border-rose-100/30 flex gap-3">
+        {/* 下部 */}
+        <div className="rule-t rule-t-sumi flex items-center gap-3 px-5 py-4 md:px-8">
+          <button type="submit" className="btn btn-primary">
+            保存
+          </button>
+          <button type="button" onClick={onClose} className="btn">
+            取消
+          </button>
+          {editingTask && onDelete && (
             <button
-              id="cancel-form-btn"
               type="button"
-              onClick={onClose}
-              className="flex-1 text-xs py-2.5 rounded-2xl border border-slate-200 hover:bg-slate-50 dark:border-indigo-850 dark:hover:bg-indigo-900/40 font-semibold cursor-pointer text-center"
+              onClick={() => {
+                if (window.confirm('この案件を削除しますか？')) {
+                  onDelete(editingTask.id);
+                  onClose();
+                }
+              }}
+              className="tap ml-auto flex items-center text-note text-accent"
+              style={{ textDecoration: 'underline', textDecorationThickness: '0.5px' }}
             >
-              キャンセル
+              この案件を削除
             </button>
-            <button
-              id="save-form-btn"
-              type="submit"
-              className={`flex-2 text-xs py-2.5 rounded-2xl font-bold text-center cursor-pointer ${activeTheme.primaryClass}`}
-            >
-              🎉 {editingTask ? '変更を保存する' : '登録する！'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          )}
+        </div>
+      </form>
+    </aside>
   );
 }

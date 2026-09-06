@@ -55,20 +55,14 @@ export interface PlacedSticker {
 
 export type ThemeType = 'sweet' | 'mint' | 'latte' | 'cosmic' | 'sakura';
 
+/**
+ * 配色は薄墨紙の固定値＋アクセント1色に統一したため、テーマは
+ * Firestore の userConfigs.activeThemeId を保持するためだけに残している。
+ * （firestore.rules の isValidUserConfig が activeThemeId を必須にしている）
+ */
 export interface ThemeConfig {
   name: string;
   id: ThemeType;
-  bgClass: string;
-  bgPattern: string; // Tailwinds background decoration
-  cardClass: string;
-  primaryClass: string;
-  accentClass: string;
-  textClass: string;
-  borderClass: string;
-  badgeClass: string;
-  decorations: string[]; // Emoji or decoration characters
-  checkboxIcon: string;
-  iconBg: string;
 }
 
 export interface CalendarSettings {

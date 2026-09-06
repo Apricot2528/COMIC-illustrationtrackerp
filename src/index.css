@@ -1,1 +1,282 @@
 @import "tailwindcss";
+
+/* =========================================================================
+   校了進行表 — デザイントークン
+   紙の上に罫線と活字だけで組んだ、静かで実務的な画面。
+   地は薄墨紙。真っ白(#fff)は使わない。アクセントは1色のみ。
+   ========================================================================= */
+
+@theme {
+  /* --- 色 --------------------------------------------------------------- */
+  --color-paper: #f4f5f3; /* 画面地（薄墨紙） */
+  --color-sumi: #262a26; /* 墨。本文・作品名・天地罫 */
+  --color-hojo: #838a80; /* 補助。列見出し・補助文字・完了済 */
+  --color-kei: #d7dad3; /* 罫。区切り線・副ボタン枠 */
+  --color-panel: #edefea; /* 展開行の地 */
+  --color-desk: #e7eae5; /* ウィンドウ外側 */
+
+  /* 注意色。既定は青竹。ユーザーが設定で1色だけ差し替えられる */
+  --color-accent: var(--ui-accent);
+
+  /* --- 書体 ------------------------------------------------------------- */
+  --font-mincho: 'Noto Serif JP', serif; /* 見出し・作品名 */
+  --font-gothic: 'IBM Plex Sans JP', system-ui, sans-serif; /* UI・本文 */
+  --font-mono: 'IBM Plex Mono', monospace; /* 数字すべて */
+
+  /* --- 文字サイズ（この4段以外を作らない） ------------------------------ */
+  --text-note: 12px; /* 列見出し・補助・ボタン・すべての数字 */
+  --text-body: 14px; /* 本文・設定項目 */
+  --text-title: 18px; /* 作品名・ドロワー見出し */
+  --text-display: 28px; /* 画面題字 */
+
+  /* --- 角丸（最大3px。ピル型は作らない） -------------------------------- */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+}
+
+:root {
+  /* 既定のアクセント＝青竹。App 側が customStyle.accentColor で上書きする */
+  --ui-accent: #2f6b4f;
+  color-scheme: light;
+}
+
+/* =========================================================================
+   基本
+   ========================================================================= */
+
+html,
+body {
+  margin: 0;
+  background: var(--color-desk);
+  color: var(--color-sumi);
+  font-family: var(--font-gothic);
+  font-size: var(--text-body);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-kei);
+}
+
+/* 数字は等幅・桁揃え。表として縦に読めること */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 明朝の見出し */
+.mincho {
+  font-family: var(--font-mincho);
+  font-weight: 400;
+}
+
+/* 題字（アプリ名） */
+.title-mark {
+  font-family: var(--font-mincho);
+  font-size: var(--text-body);
+  letter-spacing: 0.3em;
+}
+
+/* =========================================================================
+   罫線
+   0.5px は端末により消えることがあるため、疑似要素を scaleY(.5) で描く。
+   影は使わない。
+   ========================================================================= */
+
+.rule-b {
+  position: relative;
+}
+.rule-b::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--color-kei);
+  transform: scaleY(0.5);
+  transform-origin: bottom;
+  pointer-events: none;
+}
+
+.rule-t {
+  position: relative;
+}
+.rule-t::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--color-kei);
+  transform: scaleY(0.5);
+  transform-origin: top;
+  pointer-events: none;
+}
+
+/* 上罫はスマホの縦積み時だけ引く。2段組みになる幅では消す */
+@media (min-width: 1024px) {
+  .lg\:rule-t-none::before {
+    content: none;
+  }
+}
+
+/* 天地・見出し罫（墨） */
+.rule-b-sumi::after {
+  background: var(--color-sumi);
+}
+.rule-t-sumi::before {
+  background: var(--color-sumi);
+}
+
+/* =========================================================================
+   タップ領域
+   スマホでは指で押せる 44px を確保する。罫線の間隔は変えたくないので、
+   小さな操作子は負のマージンで周囲にはみ出させて当たり判定だけ広げる。
+   ========================================================================= */
+
+@media (max-width: 1023px) {
+  .tap {
+    min-height: 44px;
+  }
+  /* アイコンなど小さな操作子。見た目の大きさは変えずに当たり判定だけ広げる */
+  .tap-icon {
+    padding: 15px;
+    margin: -15px;
+  }
+}
+
+/* =========================================================================
+   枠線ボタン（塗りなし・radius 2px）
+   ========================================================================= */
+
+.btn {
+  font-size: var(--text-note);
+  line-height: 1;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--color-kei);
+  background: transparent;
+  color: var(--color-hojo);
+  cursor: pointer;
+  font-family: var(--font-gothic);
+}
+/* 主ボタン＝枠も文字も墨 */
+.btn-primary {
+  border-color: var(--color-sumi);
+  color: var(--color-sumi);
+}
+.btn:hover {
+  background: var(--color-panel);
+}
+@media (max-width: 1023px) {
+  .btn {
+    min-height: 44px;
+  }
+}
+
+/* 小さな枠（種別・入金・状態の表示）。色分けでなく文字で示す */
+.tag {
+  display: inline-block;
+  font-size: var(--text-note);
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 0.5px solid var(--color-kei);
+  color: var(--color-hojo);
+  white-space: nowrap;
+}
+.tag-sumi {
+  border-color: var(--color-sumi);
+  color: var(--color-sumi);
+}
+.tag-accent {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+/* 超過。アクセント地に地色の白抜き */
+.tag-fill {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-paper);
+}
+
+/* =========================================================================
+   入力欄。罫線の上に直接置く（枠なし・地なし）
+   ========================================================================= */
+
+/* 幅は使う側の utility（w-full / flex-1 など）で決める。
+   ここで width を指定すると Tailwind の w-* を打ち消してしまう。 */
+.field {
+  border: none;
+  background: transparent;
+  color: var(--color-sumi);
+  font-family: var(--font-gothic);
+  font-size: var(--text-body);
+  padding: 0;
+  outline: none;
+}
+.field::placeholder {
+  color: var(--color-hojo);
+}
+.field:focus {
+  outline: none;
+}
+.field-num {
+  font-family: var(--font-mono);
+  font-size: var(--text-note);
+  font-variant-numeric: tabular-nums;
+}
+
+/* スマホでは行の高さを変えずに、入力欄の当たり判定だけ 44px に広げる */
+@media (max-width: 1023px) {
+  .field {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    margin-top: -12px;
+    margin-bottom: -12px;
+  }
+}
+
+/* 日付入力のカレンダーアイコンを墨に寄せる */
+input[type='date']::-webkit-calendar-picker-indicator,
+input[type='time']::-webkit-calendar-picker-indicator {
+  filter: grayscale(1);
+  opacity: 0.5;
+  cursor: pointer;
+}
+
+/* =========================================================================
+   スクロールバー。ピル型にしない
+   ========================================================================= */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-kei) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-kei);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-hojo);
+}
+
+/* =========================================================================
+   アニメーションを使わない
+   ステッカーのドラッグ（transform）だけは操作に追従する必要があるため除外。
+   ========================================================================= */
+
+*:not(.sticker-layer):not(.sticker-layer *) {
+  transition: none !important;
+  animation: none !important;
+}

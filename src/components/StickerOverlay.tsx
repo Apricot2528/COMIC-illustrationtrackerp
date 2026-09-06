@@ -4,42 +4,24 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { PlacedSticker, ThemeConfig, CustomStyleConfig } from '../types';
-import { Trash2, Move, RotateCw, ZoomIn, ZoomOut, Plus, Image as ImageIcon, Sparkles, X, ChevronRight, Minimize2 } from 'lucide-react';
+import {PlacedSticker, CustomStyleConfig } from '../types';
+import { Trash2, Move, RotateCw, ZoomIn, ZoomOut } from 'lucide-react';
+import { toast } from '../utils/toast';
 
 interface StickerOverlayProps {
   stickers: PlacedSticker[];
   onStickersChange: (stickers: PlacedSticker[]) => void;
-  activeTheme: ThemeConfig;
   customStyle?: CustomStyleConfig;
 }
 
 export default function StickerOverlay({
   stickers,
   onStickersChange,
-  activeTheme,
   customStyle
 }: StickerOverlayProps) {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  
-  // Dynamic color matching
-  const currentPreset = customStyle?.themePreset || 'pastel';
-  const isPresetCustom = currentPreset === 'custom';
-  
-  const presetDefaults = {
-    pastel: { accentColor: '#ffd803', subColor: '#2d334a' },
-    sage: { accentColor: '#0e172c', subColor: '#ff70a6' },
-    autumn: { accentColor: '#6246ea', subColor: '#907eff' },
-    pop: { accentColor: '#3da9fc', subColor: '#5f6c7b' },
-    indigo: { accentColor: '#9a7b56', subColor: '#c19b6c' },
-    custom: { accentColor: '#ffd803', subColor: '#2d334a' }
-  };
-  
-  const selectedPreset = presetDefaults[currentPreset as keyof typeof presetDefaults] || presetDefaults.pastel;
-  const customAccent = isPresetCustom ? (customStyle?.accentColor || '#ff85a1') : selectedPreset.accentColor;
-  const customSub = isPresetCustom ? (customStyle?.subColor || '#e197b9') : selectedPreset.subColor;
   
   // Floating status text or hint
   const [stickerHoverId, setStickerHoverId] = useState<string | null>(null);
@@ -70,26 +52,11 @@ export default function StickerOverlay({
   // Read local file from PC as custom sticker
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleAddEmojiSticker = (emoji: string) => {
-    const newSticker: PlacedSticker = {
-      id: `sticker-emoji-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      type: 'emoji',
-      emoji,
-      x: 150 + Math.random() * 80, // Offset spawn
-      y: 200 + Math.random() * 120,
-      rotate: Math.round(Math.random() * 30 - 15), // micro-rotation
-      scale: 1.0,
-      containerId: 'global'
-    };
-    const updated = [...stickers, newSticker];
-    onStickersChange(updated);
-  };
-
   const handleAddCustomImageSticker = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 1024 * 1024 * 1.5) { // 1.5MB limit to prevent storage quota overflow
-        alert('ステッカー用の画像ファイルサイズは1.5MB以下にしてください💧');
+        toast('ステッカー用の画像ファイルサイズは1.5MB以下にしてください💧', 'error');
         return;
       }
       const reader = new FileReader();
@@ -206,14 +173,12 @@ export default function StickerOverlay({
     }));
   };
 
-  const isDark = activeTheme.id === 'cosmic' || !!customStyle?.darkMode;
-
   return (
     <>
       {/* 1. Layer of Draggable Stickers on the screen */}
       <div 
         id="stickers-canvas-container"
-        className="fixed inset-0 pointer-events-none z-40 select-none overflow-hidden"
+        className="sticker-layer fixed inset-0 pointer-events-none z-40 select-none overflow-hidden"
       >
         {stickers.map((sticker) => {
           const isSelectedDrag = sticker.id === activeDragId;
@@ -240,19 +205,16 @@ export default function StickerOverlay({
               <div 
                 onMouseDown={(e) => handleMouseDown(sticker.id, sticker.x, sticker.y, e)}
                 onTouchStart={(e) => handleTouchStart(sticker.id, sticker.x, sticker.y, e)}
-                className={`p-3.5 rounded-2xl cursor-grab active:cursor-grabbing relative flex items-center justify-center min-w-14 min-h-14 transition-all duration-150 select-none ${
-                  isSelectedDrag 
-                    ? 'border-2 border-indigo-400 bg-indigo-50/10 shadow-lg scale-105' 
-                    : isSelected
-                      ? 'border-2 border-indigo-500 bg-indigo-50/20 dark:bg-indigo-950/30'
-                      : isHovered 
-                        ? 'border-2 border-rose-450 bg-white/60 dark:bg-indigo-950/30' 
-                        : 'border-0 border-transparent bg-transparent'
-                }`}
+                className="relative flex min-h-14 min-w-14 cursor-grab select-none items-center justify-center p-3 active:cursor-grabbing"
+                style={{
+                  border: isSelectedDrag || isSelected || isHovered ? '0.5px solid #262A26' : '0.5px solid transparent',
+                  borderRadius: '2px',
+                  background: isSelectedDrag || isSelected ? 'rgba(237, 239, 234, 0.6)' : 'transparent',
+                }}
               >
                 {/* Sticker content */}
                 {sticker.type === 'emoji' ? (
-                  <span className="text-4xl filter drop-shadow-md select-none font-sans block leading-none">
+                  <span className="block select-none text-4xl leading-none">
                     {sticker.emoji}
                   </span>
                 ) : (
@@ -260,51 +222,55 @@ export default function StickerOverlay({
                     src={sticker.imgUrl} 
                     alt="カスタムステッカー" 
                     referrerPolicy="no-referrer"
-                    className="w-16 h-16 object-contain pointer-events-none drop-shadow-md rounded-lg"
+                    className="pointer-events-none h-16 w-16 object-contain"
                   />
                 )}
 
                 {/* Bubble action tool menu */}
                 <div 
-                  className={`absolute -bottom-10 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900/90 dark:bg-indigo-950/95 py-1 px-1.5 rounded-full shadow-lg border border-slate-700/80 z-50 transition-opacity duration-200 pointer-events-auto ${
-                    isHovered || isSelectedDrag ? 'opacity-100 flex' : 'opacity-0 hidden'
+                  className={`pointer-events-auto absolute -bottom-10 left-1/2 z-50 -translate-x-1/2 items-center gap-1 px-1.5 py-1 ${
+                    isHovered || isSelectedDrag ? 'flex' : 'hidden'
                   }`}
+                  style={{ background: '#F4F5F3', border: '0.5px solid #262A26', borderRadius: '2px' }}
                 >
                   <button
                     onClick={() => adjustSticker(sticker.id, 'scale-up')}
-                    className="sticker-tool p-1 rounded-full text-white hover:bg-slate-850 cursor-pointer duration-100"
+                    className="sticker-tool cursor-pointer p-1 text-sumi"
                     title="拡大"
                   >
-                    <ZoomIn className="w-3 h-3 text-white" />
+                    <ZoomIn className="h-4 w-4" strokeWidth={1.25} />
                   </button>
                   <button
                     onClick={() => adjustSticker(sticker.id, 'scale-down')}
-                    className="sticker-tool p-1 rounded-full text-white hover:bg-slate-850 cursor-pointer duration-100"
+                    className="sticker-tool cursor-pointer p-1 text-sumi"
                     title="縮小"
                   >
-                    <ZoomOut className="w-3 h-3 text-white" />
+                    <ZoomOut className="h-4 w-4" strokeWidth={1.25} />
                   </button>
                   <button
                     onClick={() => adjustSticker(sticker.id, 'rotate')}
-                    className="sticker-tool p-1 rounded-full text-white hover:bg-slate-850 cursor-pointer duration-100"
+                    className="sticker-tool cursor-pointer p-1 text-sumi"
                     title="時計回りに回転"
                   >
-                    <RotateCw className="w-3 h-3 text-white" />
+                    <RotateCw className="h-4 w-4" strokeWidth={1.25} />
                   </button>
-                  <span className="block h-3 w-[1px] bg-slate-700 mx-0.5" />
+                  <span className="mx-0.5 block h-3 w-[1px]" style={{ background: '#D7DAD3' }} />
                   <button
                     onClick={() => adjustSticker(sticker.id, 'delete')}
-                    className="sticker-tool p-1 rounded-full text-rose-400 hover:bg-rose-900/50 cursor-pointer duration-100"
+                    className="sticker-tool cursor-pointer p-1 text-accent"
                     title="はがす（削除）"
                   >
-                    <Trash2 className="w-3 h-3 text-rose-400" />
+                    <Trash2 className="h-4 w-4" strokeWidth={1.25} />
                   </button>
                 </div>
 
                 {/* Move cursor indicator */}
                 {isHovered && !isSelectedDrag && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white text-[9px] font-black text-rose-600 px-1 py-0.5 rounded-md border border-rose-200 shadow-sm leading-none flex items-center gap-0.5">
-                    <Move className="w-2.5 h-2.5" />
+                  <div
+                    className="absolute -top-4 left-1/2 flex -translate-x-1/2 items-center gap-1 px-1.5 py-0.5 text-note leading-none text-hojo"
+                    style={{ background: '#F4F5F3', border: '0.5px solid #D7DAD3', borderRadius: '2px' }}
+                  >
+                    <Move className="h-3 w-3" strokeWidth={1.25} />
                     <span>ドラッグ</span>
                   </div>
                 )}
@@ -314,104 +280,62 @@ export default function StickerOverlay({
         })}
       </div>
 
-      {/* 2. Floating Toggle Button bottom-right */}
+      {/* 2. パレットの開閉（画面右下・枠線のみ） */}
       <div className="fixed bottom-6 right-6 z-50">
         <button
           id="stickers-palette-toggle-btn"
           onClick={() => setIsPaletteOpen(!isPaletteOpen)}
-          className={`flex items-center gap-2 p-3.5 rounded-full shadow-2xl border-2 transition duration-300 transform scale-100 hover:scale-[1.05] active:scale-95 cursor-pointer text-white font-extrabold text-sm ${
-            isPaletteOpen 
-              ? 'bg-slate-900 border-slate-755 shadow-none' 
-              : 'shadow-lg hover:shadow-xl'
-          }`}
-          style={{
-            background: isPaletteOpen 
-              ? undefined 
-              : `linear-gradient(135deg, ${customSub}, ${customAccent})`,
-            borderColor: isPaletteOpen ? 'transparent' : `${customAccent}80`
-          }}
-          title="ステッカーパレットを表示"
+          className="btn"
+          style={{ background: '#F4F5F3' }}
+          title="ステッカー"
         >
-          {isPaletteOpen ? (
-            <>
-              <X className="w-5 h-5 text-white" />
-              <span>閉じる</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-5 h-5 text-white animate-spin-slow" />
-              <span>✨ 進捗ステッカー!</span>
-            </>
-          )}
+          {isPaletteOpen ? '閉じる' : 'ステッカー'}
         </button>
       </div>
 
-      {/* 3. Sticker Selection Palette Panel */}
+      {/* 3. ステッカーのパレット */}
       {isPaletteOpen && (
-        <div 
+        <div
           id="stickers-palette-panel"
-          className={`fixed bottom-24 right-6 z-50 w-80 rounded-3xl border-2 p-5 shadow-2.5xl transition max-h-[460px] overflow-y-auto ${
-            isDark ? 'bg-indigo-950/95 border-indigo-800 text-indigo-150 backdrop-blur-md' : 'bg-white/95 border-slate-200 text-slate-800 backdrop-blur-md'
-          }`}
+          className="fixed bottom-[68px] right-6 z-50 max-h-[420px] w-[320px] overflow-y-auto px-5 py-4"
+          style={{ background: '#F4F5F3', border: '0.5px solid #262A26', borderRadius: '2px' }}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between pb-3 border-b border-rose-100/20 mb-3">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 dark:text-indigo-300 flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
-              <span>✨ ミニキャラ＆進捗ステッカー</span>
-            </h3>
+          <div className="rule-b mb-3 flex items-baseline justify-between pb-2">
+            <h3 className="mincho text-body">ステッカー</h3>
             <button
               onClick={() => {
                 if (window.confirm('画面上のステッカーをすべてはがしますか？')) {
                   onStickersChange([]);
                 }
               }}
-              className="text-[10px] text-rose-500 dark:text-rose-400 font-extrabold hover:underline"
-              title="すべてリセット"
+              className="text-note text-accent"
+              style={{ textDecoration: 'underline', textDecorationThickness: '0.5px' }}
+              title="すべてはがす"
             >
-              全撤去
+              すべてはがす
             </button>
           </div>
 
-          <p className="text-[10px] text-slate-400 dark:text-indigo-300 mb-3.5 leading-relaxed font-semibold">
-            お好きなミニキャラや表情スタンプを画面に配置して、モチベーション高めてね！ステッカーは画面上のどこにでも自由自在にドラッグ調整・配置できます💖
+          <p className="mb-4 text-note text-hojo leading-[1.8]">
+            手持ちの絵を画面に置けます。置いたあとはドラッグで移動、拡大・縮小・回転もできます。
           </p>
 
-          {/* Custom user storage upload sticker */}
-          <div className="py-3 px-3.5 rounded-2xl border border-dashed border-rose-300/40 bg-rose-500/5 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-black text-rose-500 flex items-center gap-1">
-                <ImageIcon className="w-3.5 h-3.5" />
-                <span>自分のPCから選択する</span>
-              </span>
-            </div>
-            <p className="text-[10px] text-slate-450 leading-tight">
-              あなたのPCに保存されている推しキャラやミニ自作絵、猫の画像をアップロードして画面に置けます！
-            </p>
+          <button
+            id="upload-custom-sticker-action-btn"
+            onClick={() => fileInputRef.current?.click()}
+            className="btn btn-primary w-full"
+          >
+            画像を選ぶ
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleAddCustomImageSticker}
+          />
 
-            <button
-              id="upload-custom-sticker-action-btn"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full py-2 px-3 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5 shadow-sm hover:shadow-md duration-200"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>PCのイラスト画像を使用する</span>
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleAddCustomImageSticker}
-            />
-          </div>
-
-          <div className="mt-4 pt-2 border-t border-rose-100/10 text-center">
-            <p className="text-[9px] text-slate-400 font-semibold leading-relaxed">
-              ※ステッカーはドラッグ、拡大、縮小、回転、削除できます。<br />
-              レイアウト状態はPCブラウザに永続保存されます✨
-            </p>
-          </div>
+          <p className="mt-3 text-note text-hojo">画像は 1.5MB まで。</p>
         </div>
       )}
     </>

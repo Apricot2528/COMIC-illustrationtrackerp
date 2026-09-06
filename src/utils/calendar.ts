@@ -73,15 +73,14 @@ export async function syncDeadlineToGoogleCalendar(
   accessToken: string,
   calendarId: string = 'primary'
 ): Promise<string | undefined> {
-  const summary = `🎨【締切】${task.type === 'manga' ? 'マンガ' : 'イラスト'}「${task.title}」`;
+  const summary = `【締切】${task.type === 'manga' ? '漫画' : 'イラスト'}　${task.title}`;
   
-  // Custom cute details in event body
-  const description = `✨ ${task.type === 'manga' ? 'マンガ進行度' : 'イラストのイラスト進行度'} ✨\n` +
-    `👤 クライアント名: ${task.clientName || 'なし'}\n` +
-    `💰 入金状況: ${task.depositStatus === 'paid' ? 'ご入金済み' : task.depositStatus === 'unpaid' ? '未入金' : 'なし（不要）'}\n` +
-    `📊 進行度: ${task.type === 'manga' ? `${task.totalPages} ページ管理中` : '1枚イラスト管理中'}\n` +
-    `📝 メモ:\n${task.notes || 'なし'}\n\n` +
-    `Powered by 作業進捗tracker`;
+  // イベント本文
+  const description = `クライアント: ${task.clientName || 'なし'}` + `\n` +
+    `入金: ${task.depositStatus === 'paid' ? '済' : task.depositStatus === 'unpaid' ? '未' : 'なし'}` + `\n` +
+    `体裁: ${task.type === 'manga' ? `${task.totalPages}P` : '1点'}` + `\n` +
+    `備考:` + `\n` + `${task.notes || 'なし'}` + `\n\n` +
+    `作業進捗tracker`;
 
   // Full day event for Deadline
   const event: CalendarEvent = {
@@ -135,11 +134,10 @@ export async function syncMeetingToGoogleCalendar(
 ): Promise<string | undefined> {
   if (!task.meetingDate) return undefined;
 
-  const summary = `🤝【打合せ】「${task.title}」様 ${task.clientName ? `(${task.clientName})` : ''}`;
-  const description = `💖 打合せ・進捗確認 💖\n` +
-    `🎨 対象タスク: ${task.title}\n` +
-    `📂 モード: ${task.type === 'manga' ? 'マンガ制作' : 'イラスト制作'}\n\n` +
-    `ご準備お忘れなく！✨`;
+  const summary = `【打合せ】${task.title}${task.clientName ? `　${task.clientName}` : ''}`;
+  const description = `対象: ${task.title}` + `\n` +
+    `種別: ${task.type === 'manga' ? '漫画' : 'イラスト'}` + `\n\n` +
+    `作業進捗tracker`;
 
   // Start time and end time (meeting default 1 hour)
   const startDateTime = task.meetingDate + ':00'; // YYYY-MM-DDTHH:mm:00
@@ -231,9 +229,8 @@ export async function syncTodoToGoogleCalendar(
 ): Promise<string | undefined> {
   if (!todo.deadline) return undefined;
 
-  const summary = `📌【TODO】${todo.title}`;
-  const description = `💖 とりあえずやること TODO 💖\n` +
-    `お絵描き準備・その他雑務：${todo.title}\n\n` +
+  const summary = `【TODO】${todo.title}`;
+  const description = `${todo.title}` + `\n\n` +
     `作業進捗tracker`;
 
   const event: CalendarEvent = {
