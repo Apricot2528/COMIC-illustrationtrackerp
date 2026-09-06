@@ -8,7 +8,7 @@ import { Task, ThemeConfig, CalendarSettings, DepositStatus, PlacedSticker, Cust
 import { THEMES } from './data/themes';
 import { syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar, CALENDAR_SCOPES } from './utils/calendar';
 import ProgressTable from './components/ProgressTable';
-import CalendarAccordion from './components/CalendarAccordion';
+import CalendarPanel from './components/CalendarPanel';
 import { HeaderClock } from './components/HeaderClock';
 import { RefreshCw, Trash } from 'lucide-react';
 import { Todo } from './types';
@@ -1696,14 +1696,11 @@ export default function App() {
             {/* 締切カレンダー。スマホでは一覧の下に縦積みし、欄の頭に墨罫を引く */}
             <section className="rule-t-sumi rule-t rule-b px-4 py-5 md:px-8 lg:rule-t-none">
               <h3 className="mb-4 text-note text-hojo">締切カレンダー</h3>
-              <CalendarAccordion
+              <CalendarPanel
                 tasks={tasks}
                 todos={todos}
-                  calendarSettings={calendarSettings}
-                onSyncTask={handleManualSync}
+                calendarSettings={calendarSettings}
                 onSelectTaskId={setSelectedTaskId}
-                customStyle={customStyle}
-                onCalendarSettingsChange={handleCalendarSettingsChange}
                 onConnect={handleGoogleSignIn}
               />
             </section>
