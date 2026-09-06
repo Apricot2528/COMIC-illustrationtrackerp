@@ -145,13 +145,30 @@ export default function CalendarPanel({
     return out;
   }, [tasks, todos]);
 
-  // Google 側の予定
+  // アプリが Google カレンダーへ書き出した予定の id。
+  // 同じ予定を「この表の予定」と「Google の予定」で二重に出さないために使う。
+  const appEventIds = useMemo(() => {
+    const ids = new Set<string>();
+    tasks.forEach((t) => {
+      if (t.calendarEventId) ids.add(t.calendarEventId);
+      if (t.meetingEventId) ids.add(t.meetingEventId);
+    });
+    todos.forEach((t) => {
+      if (t.calendarEventId) ids.add(t.calendarEventId);
+    });
+    return ids;
+  }, [tasks, todos]);
+
+  // Google 側の予定（アプリが作ったものは除く）
   const googleEntries = useMemo(() => {
     const out: Entry[] = [];
     googleEvents.forEach((evt: any, i: number) => {
       const raw = evt.start?.dateTime || evt.start?.date;
       const w = parseWhen(raw);
       if (!w) return;
+      // 繰り返し予定は id が「元のid_日時」に展開されるので、頭の部分でも照合する
+      const gid = String(evt.id || '');
+      if (gid && (appEventIds.has(gid) || appEventIds.has(gid.split('_')[0]))) return;
       out.push({
         key: `g-${evt.id || i}`,
         ...w,
@@ -160,7 +177,7 @@ export default function CalendarPanel({
       });
     });
     return out;
-  }, [googleEvents]);
+  }, [googleEvents, appEventIds]);
 
   // 日付ごとにまとめる
   const byDate = useMemo(() => {
