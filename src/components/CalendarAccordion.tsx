@@ -6,7 +6,6 @@
 import React, { useState, useEffect } from 'react';
 import { Task, ThemeConfig, CalendarSettings, Todo, CustomStyleConfig } from '../types';
 import { Calendar, ChevronDown, ChevronUp, AlertCircle, RefreshCw, CalendarDays, Clock, Sparkles } from 'lucide-react';
-import { startGoogleAuth } from '../utils/calendar';
 
 interface CalendarAccordionProps {
   tasks: Task[];
@@ -17,6 +16,7 @@ interface CalendarAccordionProps {
   onSelectTaskId?: (taskId: string) => void;
   customStyle?: CustomStyleConfig;
   onCalendarSettingsChange?: (settings: CalendarSettings) => void;
+  onConnect?: () => void;
 }
 
 const PRESET_THEME_COLORS = {
@@ -55,14 +55,13 @@ export default function CalendarAccordion({
   onSyncTask,
   onSelectTaskId,
   customStyle,
-  onCalendarSettingsChange
+  onCalendarSettingsChange,
+  onConnect
 }: CalendarAccordionProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [googleEvents, setGoogleEvents] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tempClientId, setTempClientId] = useState(calendarSettings.clientId || '');
-  const [copied, setCopied] = useState(false);
 
   // Google認証完了している場合、またはトークンがある場合はアコーディオンを自動で開く
   useEffect(() => {
@@ -70,11 +69,6 @@ export default function CalendarAccordion({
       setIsOpen(true);
     }
   }, [calendarSettings.accessToken]);
-
-  // 同期ClientIdの最新状態をローカルに反映
-  useEffect(() => {
-    setTempClientId(calendarSettings.clientId || '');
-  }, [calendarSettings.clientId]);
 
   // Fetch real Google Calendar events if connected
   useEffect(() => {
@@ -111,45 +105,6 @@ export default function CalendarAccordion({
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleCopyRedirectUri = () => {
-    const redirectUri = window.location.origin + window.location.pathname;
-    navigator.clipboard.writeText(redirectUri);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleSaveAndConnect = () => {
-    if (!tempClientId.trim()) {
-      alert('クライアントIDを入力してください。💧');
-      return;
-    }
-    const updated = {
-      ...calendarSettings,
-      clientId: tempClientId.trim()
-    };
-    if (onCalendarSettingsChange) {
-      onCalendarSettingsChange(updated);
-    }
-    // Trigger auth immediately with GAPI flow
-    const scopes = [
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/calendar.events'
-    ];
-    startGoogleAuth(tempClientId.trim(), scopes);
-  };
-
-  const handleTriggerAuth = () => {
-    if (!calendarSettings.clientId) {
-      alert('クライアントIDが設定されていません。💧');
-      return;
-    }
-    const scopes = [
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/calendar.events'
-    ];
-    startGoogleAuth(calendarSettings.clientId, scopes);
   };
 
   // Local deadlines synthesized from current tasks and todos
@@ -310,57 +265,13 @@ export default function CalendarAccordion({
                     </p>
                   </div>
 
-                  {calendarSettings.clientId ? (
-                    <div className="space-y-2">
-                      <p className="text-[9px] text-slate-400 font-mono">
-                        保存済みID: <span className="opacity-80">{calendarSettings.clientId.substring(0, 15)}...</span>
-                      </p>
-                      <button
-                        type="button"
-                        onClick={handleTriggerAuth}
-                        className="py-2 px-4 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-xl cursor-pointer duration-150 shadow-sm flex items-center justify-center gap-1.5 w-full transform hover:scale-[1.01] active:scale-[0.99]"
-                      >
-                        ⚡ ワンクリックでカレンダー接続 🔑
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 text-left">
-                      <div className="space-y-1.5">
-                        <label className="block text-[9.5px] font-bold text-slate-450 dark:text-indigo-300">
-                          🔑 OAuth クライアントID
-                        </label>
-                        <input
-                          id="acc-client-id-inline-input"
-                          type="text"
-                          placeholder="ここに クライアントID を入力..."
-                          value={tempClientId}
-                          onChange={(e) => setTempClientId(e.target.value)}
-                          className="w-full text-[10.5px] px-2.5 py-1.5 rounded-xl border bg-white dark:bg-indigo-950 text-slate-900 dark:text-white border-slate-200 dark:border-indigo-700 focus:outline-hidden"
-                        />
-                      </div>
-                      
-                      <button
-                        type="button"
-                        onClick={handleSaveAndConnect}
-                        className="w-full py-2 px-3 text-xs bg-indigo-500 hover:bg-indigo-600 text-white font-bold rounded-xl cursor-pointer duration-150 text-center shadow-xs"
-                      >
-                        💾 保存してワンクリック接続 🚀
-                      </button>
-
-                      <div className="pt-2 border-t border-slate-200/40 text-[9.5px] text-slate-400 space-y-1">
-                        <div className="flex items-center justify-between gap-1.5 bg-slate-100/50 dark:bg-indigo-900/20 p-1.5 rounded border border-slate-200/30">
-                          <span className="truncate max-w-[170px]">🌐 URI: {window.location.origin}</span>
-                          <button
-                            type="button"
-                            onClick={handleCopyRedirectUri}
-                            className="text-[9px] text-indigo-550 dark:text-indigo-400 hover:underline font-bold shrink-0 cursor-pointer"
-                          >
-                            {copied ? '✅ コピー済' : '📋 コピー'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={onConnect}
+                    className="py-2 px-4 text-xs font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-xl cursor-pointer duration-150 shadow-sm flex items-center justify-center gap-1.5 w-full transform hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    ⚡ Googleでログインしてカレンダー接続 📅
+                  </button>
                 </div>
               ) : isLoading ? (
                 <div className="flex items-center justify-center py-8 gap-2 text-xs text-slate-400">

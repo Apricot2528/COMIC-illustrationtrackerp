@@ -5,65 +5,11 @@
 
 import { Task } from '../types';
 
-/**
- * Initiates the Client-side Google OAuth 2.0 Token Flow (Implicit Grant)
- * This allows safe operation purely in the sandboxed preview/tab environment.
- */
-export function startGoogleAuth(clientId: string, scopes: string[]): void {
-  const redirectUri = window.location.origin + window.location.pathname;
-  const state = Math.random().toString(36).substring(2, 15);
-  localStorage.setItem('oauth_state', state);
-
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=${encodeURIComponent(clientId)}` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&response_type=token` +
-    `&scope=${encodeURIComponent(scopes.join(' '))}` +
-    `&state=${encodeURIComponent(state)}` +
-    `&prompt=consent`;
-
-  // Open the auth popup or redirect in iframe-compatible way
-  // Since we are in an iframe, we might want to suggest opening in a new tab if it blocks,
-  // but let's try direct redirection first as it's standard and easiest to resume.
-  window.location.href = authUrl;
-}
-
-/**
- * Checks URL hash fragments for OAuth tokens on page render / component mount
- */
-export interface ParsedToken {
-  accessToken: string;
-  expiresIn: string;
-  state: string;
-}
-
-export function parseOAuthHash(): ParsedToken | null {
-  const hash = window.location.hash;
-  if (!hash) return null;
-
-  const params: { [key: string]: string } = {};
-  const regex = /([^&=]+)=([^&]*)/g;
-  let m;
-
-  // Clean starting '#'
-  const queryString = hash.substring(1);
-  while ((m = regex.exec(queryString)) !== null) {
-    params[decodeURIComponent(m[1])] = decodeURIComponent(m[2]);
-  }
-
-  // Clear hash from address bar without reloading
-  window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
-
-  if (params.access_token) {
-    return {
-      accessToken: params.access_token,
-      expiresIn: params.expires_in || '3600',
-      state: params.state || ''
-    };
-  }
-
-  return null;
-}
+/** カレンダー連携で要求するスコープ（Firebase Auth の Google ログインに乗せる） */
+export const CALENDAR_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/calendar.events'
+];
 
 /**
  * Base helper for Google Calendar REST calls

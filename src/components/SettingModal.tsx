@@ -6,7 +6,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ThemeConfig, CalendarSettings, CustomStyleConfig } from '../types';
 import { THEMES } from '../data/themes';
-import { startGoogleAuth } from '../utils/calendar';
 import { X, Settings, Sparkles, AlertCircle, RefreshCw, Key, HelpCircle, LogOut, Sliders, Upload, Image as ImageIcon } from 'lucide-react';
 import { ImageCropper } from './ImageCropper';
 
@@ -19,6 +18,7 @@ interface SettingModalProps {
   calendarSettings: CalendarSettings;
   onCalendarSettingsChange: (settings: CalendarSettings) => void;
   onLogout: () => void;
+  onConnect?: () => void;
   customStyle: CustomStyleConfig;
   onCustomStyleChange: (style: CustomStyleConfig) => void;
 }
@@ -31,6 +31,7 @@ export default function SettingModal({
   calendarSettings,
   onCalendarSettingsChange,
   onLogout,
+  onConnect,
   customStyle,
   onCustomStyleChange
 }: SettingModalProps) {
@@ -298,24 +299,14 @@ export default function SettingModal({
 
 
   const handleGoogleLogin = () => {
-    if (!clientId) {
-      alert('Googleカレンダーを連携するには、Google Cloud Console から取得した「OAuth Client ID (クライアントID)」の設定が必要です。詳細は設定内のヘルプをご覧ください。💧');
-      return;
-    }
-    // Save settings before redirecting
+    // カレンダーIDだけ保存してから、Firebase Auth の Google ログイン（カレンダースコープ付き）を起動
     onCalendarSettingsChange({
       ...calendarSettings,
       clientId: clientId.trim(),
       apiKey: apiKey.trim(),
       calendarId: calendarId.trim() || 'primary',
     });
-    
-    // Explicit requested scopes
-    const scopes = [
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/calendar.events'
-    ];
-    startGoogleAuth(clientId.trim(), scopes);
+    if (onConnect) onConnect();
   };
 
   const handleApplyManualToken = () => {
@@ -852,85 +843,12 @@ export default function SettingModal({
           {showHelp && (
             <div className={`p-4 rounded-2xl text-xs leading-relaxed mb-4 ${isDark ? 'bg-indigo-950/20 text-indigo-200' : 'bg-indigo-50/50 text-indigo-850'}`}>
               <p className="font-semibold mb-1">💡 Googleカレンダー連携の手順:</p>
-              <ol className="list-decimal pl-4 space-y-1 mt-1">
-                <li>
-                  <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="underline text-indigo-600 dark:text-indigo-400">
-                    Google Cloud Console
-                  </a> にアクセスしてプロジェクトを作成。
-                </li>
-                <li><strong>Google Calendar API</strong> を有効にする。</li>
-                <li>「OAuth同意画面」を作成し（テスト・外部）、<strong>テストユーザー</strong>にあなたのアカウントを追加。</li>
-                <li>「認証情報」から <strong>OAuth クライアントID</strong> (ウェブアプリケーション型) を作成：
-                  <ul className="list-disc pl-4 mt-0.5 text-[11px] opacity-90">
-                    <li>承認済みのJavaScript生成元: <code className="bg-slate-100 dark:bg-indigo-900 border px-1 rounded">{window.location.origin}</code></li>
-                    <li>承認済みのリダイレクトURI: <code className="bg-slate-100 dark:bg-indigo-900 border px-1 rounded">{window.location.origin + window.location.pathname}</code></li>
-                  </ul>
-                </li>
-                <li>作成された クライアントID を下の入力欄に入力します。</li>
-                <li>「カレンダーに接続」を押してGoogleセキュリティ承認。</li>
-              </ol>
+              <p className="mt-1">「Google カレンダーに接続」を押して、Googleアカウントでログインし、カレンダーへのアクセスを許可するだけです。クライアントIDの入力は不要になりました。✨</p>
             </div>
           )}
 
           <div className="space-y-3">
-            {/* One-click quick connection prompt if Client ID is already entered */}
-            {clientId && !calendarSettings.accessToken && (
-              <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-center leading-relaxed space-y-2.5 my-1 hover:bg-amber-500/15 transition duration-150 rounded-2xl shadow-xs">
-                <div className="flex flex-col items-center gap-1">
-                  <Sparkles className="w-4.5 h-4.5 text-amber-500 animate-spin-slow" />
-                  <p className="text-xs font-black text-amber-700 dark:text-amber-300">
-                    ⚡ クライアントIDは設定済みです！
-                  </p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-350 leading-tight">
-                    ワンクリックで直ちにGoogleカレンダーと安全に認証連携できます。✨
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleGoogleLogin}
-                  className="py-1.5 px-3 text-[11px] font-bold text-white bg-amber-500 hover:bg-amber-600 rounded-xl cursor-pointer duration-155 shadow-xs flex items-center justify-center gap-1.5 w-full transform hover:scale-[1.01] active:scale-[0.99]"
-                >
-                  ⚡ ワンクリックでカレンダー接続 🔑
-                </button>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                Google OAuth クライアント ID
-              </label>
-              <input
-                id="oauth-client-id-input"
-                type="text"
-                placeholder="123456789-abc.apps.googleusercontent.com"
-                value={clientId}
-                onChange={(e) => setClientId(e.target.value)}
-                className={`w-full text-xs px-3 py-2 rounded-xl border focus:outline-hidden focus:ring-1 ${
-                  isDark 
-                    ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                    : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-400'
-                }`}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                  Google API キー (オプション)
-                </label>
-                <input
-                  id="api-key-input"
-                  type="password"
-                  placeholder="AIzaSy..."
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  className={`w-full text-xs px-3 py-2 rounded-xl border focus:outline-hidden focus:ring-1 ${
-                    isDark 
-                      ? 'bg-indigo-950/40 border-indigo-700 text-white focus:ring-indigo-400' 
-                      : 'bg-slate-50 border-slate-200 text-slate-900 focus:ring-rose-455'
-                  }`}
-                />
-              </div>
+            <div className="grid grid-cols-1 gap-3">
               <div>
                 <label className="block text-[11px] font-medium text-slate-400 mb-1">
                   連携カレンダーID (規定: primary)

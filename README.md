@@ -1,20 +1,30 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# 作業進捗tracker（漫画・イラスト進捗管理）
 
-# Run and deploy your AI Studio app
+Vite + React + Firebase（Auth / Firestore）で動く、締切・工程・打合せの管理アプリ。
+サーバーは不要。Firebase Hosting の無料プラン（Spark）で公開できます。
 
-This contains everything you need to run your app locally.
+## ローカルで動かす
 
-View your app in AI Studio: https://ai.studio/apps/370116e0-5141-43ea-9e1b-c09941c5838a
+```bash
+npm install
+npm run dev
+```
 
-## Run Locally
+## 公開する（初回のみ）
 
-**Prerequisites:**  Node.js
+```bash
+npm install -g firebase-tools
+firebase login
+npm run build
+firebase deploy --only hosting
+```
 
+2回目以降は `npm run deploy` だけでOK。
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Googleカレンダー連携について
+
+Googleログイン（Firebase Auth）にカレンダーのスコープを乗せているので、
+アプリ内で「Googleでログイン」するだけでカレンダー接続まで完了します。
+クライアントIDの手入力やリダイレクトURIの設定は不要です。
+
+Google Cloud 側で必要な設定は `DEPLOY.md` を参照。

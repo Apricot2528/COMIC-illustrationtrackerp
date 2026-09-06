@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Task, ThemeConfig, CalendarSettings, TaskType, DepositStatus, PlacedSticker, CustomStyleConfig } from './types';
 import { THEMES } from './data/themes';
-import { parseOAuthHash, syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar } from './utils/calendar';
+import { syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar, CALENDAR_SCOPES } from './utils/calendar';
 import SettingModal from './components/SettingModal';
 import TaskFormModal from './components/TaskFormModal';
 import ProgressTable from './components/ProgressTable';
@@ -26,6 +26,9 @@ const LOCAL_STORAGE_TASKS_KEY = 'manga_illust_tasks_v1';
 const LOCAL_STORAGE_TODOS_KEY = 'manga_illust_todos_v1';
 const LOCAL_STORAGE_THEME_KEY = 'manga_illust_theme_id_v1';
 const LOCAL_STORAGE_CAL_KEY = 'manga_illust_calendar_v1';
+
+// アクセストークンは端末の localStorage にだけ置き、Firestore には保存しない
+const stripToken = (cs: CalendarSettings): CalendarSettings => ({ ...cs, accessToken: null, tokenExpiry: null });
 const LOCAL_STORAGE_STYLE_KEY = 'manga_illust_custom_style_v1';
 
 // Hex color shade/brightness helper
@@ -423,8 +426,8 @@ export default function App() {
           const match = THEMES.find(t => t.id === data.activeThemeId);
           if (match) setActiveTheme(match);
         }
-        if (data.calendarSettings) {
-          setCalendarSettings(data.calendarSettings);
+        if (data.calendarSettings?.calendarId) {
+          setCalendarSettings(prev => ({ ...prev, calendarId: data.calendarSettings.calendarId }));
         }
       }
     }, (error) => {
@@ -658,7 +661,7 @@ export default function App() {
             userId: user.uid,
             customStyle: customStyleParsed,
             activeThemeId,
-            calendarSettings: calendarSettingsParsed
+            calendarSettings: stripToken(calendarSettingsParsed)
           });
 
           // Instantly update states to reflect local preference config
@@ -680,35 +683,6 @@ export default function App() {
     migrateLocalDataToCloud();
   }, [user]);
 
-  // --- Handle Google Calendar Redirect Hash ---
-  useEffect(() => {
-    const oauthParsed = parseOAuthHash();
-    if (oauthParsed) {
-      const storedState = localStorage.getItem('oauth_state');
-      if (storedState && oauthParsed.state === storedState) {
-        const updated = {
-          ...calendarSettings,
-          clientId: localStorage.getItem('oauth_client_id_tmp') || '',
-          accessToken: oauthParsed.accessToken,
-          tokenExpiry: Date.now() + parseInt(oauthParsed.expiresIn) * 1000
-        };
-        setCalendarSettings(updated);
-        localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
-        localStorage.removeItem('oauth_state');
-        localStorage.removeItem('oauth_client_id_tmp');
-        alert('Googleカレンダーへの連携とサインインに成功しました！✨📅');
-      } else {
-        const updated = {
-          ...calendarSettings,
-          accessToken: oauthParsed.accessToken,
-          tokenExpiry: Date.now() + parseInt(oauthParsed.expiresIn) * 1000
-        };
-        setCalendarSettings(updated);
-        localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
-        alert('カレンダーに接続しました！📅');
-      }
-    }
-  }, []);
 
   // --- Real-Time Background Meeting Checker & Alarm Chime ---
   useEffect(() => {
@@ -745,26 +719,51 @@ export default function App() {
   }, [tasks]);
 
 
-  // Sync token redirect parameters before auth start
-  useEffect(() => {
-    if (calendarSettings.clientId) {
-      localStorage.setItem('oauth_client_id_tmp', calendarSettings.clientId);
-    }
-  }, [calendarSettings.clientId]);
-
   // Make sure to select a valid task when the active task is deleted
   const selectedTask = tasks.find(t => t.id === selectedTaskId) || null;
 
   // --- Google Sign-In & Sign-Out handlers ---
-  const handleGoogleSignIn = async () => {
+  // Google ログイン ＝ カレンダー接続。Firebase Auth の Google プロバイダに
+  // カレンダーのスコープを乗せ、返ってきた OAuth アクセストークンを保持する。
+  const connectGoogle = async (silent = false): Promise<string | null> => {
     const provider = new GoogleAuthProvider();
+    CALENDAR_SCOPES.forEach(scope => provider.addScope(scope));
+    if (auth.currentUser?.email) {
+      provider.setCustomParameters({ login_hint: auth.currentUser.email });
+    }
     try {
-      await signInWithPopup(auth, provider);
-      alert('Googleでログインしました！🌸☁️');
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const accessToken = credential?.accessToken || null;
+      const updated: CalendarSettings = {
+        ...calendarSettings,
+        accessToken,
+        tokenExpiry: accessToken ? Date.now() + 55 * 60 * 1000 : null
+      };
+      setCalendarSettings(updated);
+      localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
+      if (!silent) {
+        alert(accessToken ? 'Googleでログインし、カレンダーに接続しました！🌸📅' : 'Googleでログインしました！🌸☁️');
+      }
+      return accessToken;
     } catch (err) {
       console.error("Sign in failed:", err);
-      alert("Googleサインインに失敗しました。詳細: " + (err instanceof Error ? err.message : String(err)));
+      if (!silent) {
+        alert("Googleサインインに失敗しました。詳細: " + (err instanceof Error ? err.message : String(err)));
+      }
+      return null;
     }
+  };
+
+  // 有効なアクセストークンを返す。期限切れならポップアップで取り直す。
+  const ensureCalendarToken = async (): Promise<string | null> => {
+    const valid = calendarSettings.accessToken && calendarSettings.tokenExpiry && calendarSettings.tokenExpiry > Date.now() + 60 * 1000;
+    if (valid) return calendarSettings.accessToken;
+    return await connectGoogle(true);
+  };
+
+  const handleGoogleSignIn = async () => {
+    await connectGoogle();
   };
 
   const handleGoogleSignOut = async () => {
@@ -789,7 +788,7 @@ export default function App() {
         userId: user.uid,
         customStyle: style || customStyle,
         activeThemeId: themeId || activeTheme.id,
-        calendarSettings: calSettings || calendarSettings
+        calendarSettings: stripToken(calSettings || calendarSettings)
       }, { merge: true });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `userConfigs/${user.uid}`);
@@ -981,8 +980,9 @@ export default function App() {
 
   // --- Actual Sync operation to Google Cloud ---
   const doSyncToGoogle = async (task: Task, currentTasks: Task[]) => {
-    if (!calendarSettings.accessToken) {
-      alert('Googleカレンダーにログインしていません。設定内の「カレンダーに接続」から認証してください。🔒');
+    const accessToken = await ensureCalendarToken();
+    if (!accessToken) {
+      alert('Googleカレンダーに接続できませんでした。「Googleでログイン」からやり直してください。🔒');
       return;
     }
 
@@ -990,7 +990,7 @@ export default function App() {
       // 1. Sync Deadline Event
       const deadlineEventId = await syncDeadlineToGoogleCalendar(
         task,
-        calendarSettings.accessToken,
+        accessToken,
         calendarSettings.calendarId
       );
 
@@ -999,7 +999,7 @@ export default function App() {
       if (task.meetingDate) {
         meetingEventId = await syncMeetingToGoogleCalendar(
           task,
-          calendarSettings.accessToken,
+          accessToken,
           calendarSettings.calendarId
         );
       }
@@ -1110,7 +1110,8 @@ export default function App() {
     let finalTodo = newTodo;
     if (todoDeadline && calendarSettings.accessToken) {
       try {
-        const calEventId = await syncTodoToGoogleCalendar(newTodo, calendarSettings.accessToken, calendarSettings.calendarId);
+        const token = await ensureCalendarToken();
+        const calEventId = token ? await syncTodoToGoogleCalendar(newTodo, token, calendarSettings.calendarId) : undefined;
         if (calEventId) {
           finalTodo.calendarEventId = calEventId;
         }
@@ -1196,7 +1197,9 @@ export default function App() {
     }
 
     try {
-      const calEventId = await syncTodoToGoogleCalendar(todo, calendarSettings.accessToken, calendarSettings.calendarId);
+      const token = await ensureCalendarToken();
+      if (!token) return;
+      const calEventId = await syncTodoToGoogleCalendar(todo, token, calendarSettings.calendarId);
       if (calEventId) {
         const updated = todos.map(t => t.id === todo.id ? { ...t, calendarEventId: calEventId } : t);
         setTodos(updated);
@@ -2135,6 +2138,7 @@ export default function App() {
                     onSelectTaskId={setSelectedTaskId}
                     customStyle={customStyle}
                     onCalendarSettingsChange={handleCalendarSettingsChange}
+                    onConnect={handleGoogleSignIn}
                   />
                 </div>
 
@@ -2315,6 +2319,7 @@ export default function App() {
           calendarSettings={calendarSettings}
           onCalendarSettingsChange={handleCalendarSettingsChange}
           onLogout={handleLogout}
+          onConnect={handleGoogleSignIn}
           customStyle={customStyle}
           onCustomStyleChange={(updatedStyle) => {
             setCustomStyle(updatedStyle);
