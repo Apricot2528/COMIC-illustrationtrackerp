@@ -139,10 +139,14 @@ export async function syncMeetingToGoogleCalendar(
     `種別: ${task.type === 'manga' ? '漫画' : 'イラスト'}` + `\n\n` +
     `作業進捗tracker`;
 
-  // Start time and end time (meeting default 1 hour)
+  // 打合せは既定で1時間。timeZone を添えて送るので、日時の文字列は
+  // 現地時刻のまま組み立てる（toISOString() は UTC に直してしまうため使わない）
   const startDateTime = task.meetingDate + ':00'; // YYYY-MM-DDTHH:mm:00
   const endDateObj = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000);
-  const endDateTime = endDateObj.toISOString().substring(0, 19); // YYYY-MM-DDTHH:mm:ss
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const endDateTime =
+    `${endDateObj.getFullYear()}-${p2(endDateObj.getMonth() + 1)}-${p2(endDateObj.getDate())}` +
+    `T${p2(endDateObj.getHours())}:${p2(endDateObj.getMinutes())}:00`;
 
   const event: CalendarEvent = {
     summary,
