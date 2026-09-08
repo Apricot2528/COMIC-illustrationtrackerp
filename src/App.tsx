@@ -121,6 +121,28 @@ export default function App() {
     tokenExpiry: null
   });
 
+  // Google のアクセストークンは端末の localStorage にしか無い（Firestore には
+  // 保存しない方針のため）。ログインの有無に関わらず、起動時に必ず読み戻す。
+  // これを user の有無で分岐させると、ログイン中の再読み込みでトークンが
+  // 失われ、カレンダー同期が黙って止まる。
+  useEffect(() => {
+    const stored = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
+    if (!stored) return;
+    try {
+      const parsed = JSON.parse(stored);
+      setCalendarSettings((prev) => ({
+        ...prev,
+        clientId: parsed.clientId || prev.clientId,
+        apiKey: parsed.apiKey || '',
+        calendarId: parsed.calendarId || 'primary',
+        accessToken: parsed.accessToken || null,
+        tokenExpiry: parsed.tokenExpiry || null,
+      }));
+    } catch (e) {
+      console.error('Failed to parse calendar settings', e);
+    }
+  }, []);
+
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isSettingModalOpen, setIsSettingModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -427,21 +449,6 @@ export default function App() {
       if (storedThemeId) {
         const match = THEMES.find(t => t.id === storedThemeId);
         if (match) setActiveTheme(match);
-      }
-      const storedCalStr = localStorage.getItem(LOCAL_STORAGE_CAL_KEY);
-      if (storedCalStr) {
-        try {
-          const parsed = JSON.parse(storedCalStr);
-          setCalendarSettings({
-            clientId: parsed.clientId || '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
-            apiKey: parsed.apiKey || '',
-            calendarId: parsed.calendarId || 'primary',
-            accessToken: parsed.accessToken || null,
-            tokenExpiry: parsed.tokenExpiry || null
-          });
-        } catch (e) {
-          console.error('Failed to parse calendar settings', e);
-        }
       }
       return;
     }
@@ -1038,7 +1045,11 @@ export default function App() {
       toast(isNew ? '案件を保存しました。Googleカレンダーへ同期します' : '案件を保存しました。カレンダーの同期情報を更新します');
       await doSyncToGoogle(savedTask, updatedTasks);
     } else {
-      toast(isNew ? '案件を登録しました' : '案件を更新しました', 'success');
+      toast(
+        (isNew ? '案件を登録しました' : '案件を更新しました') +
+          '（Googleカレンダーは未接続のため同期していません）',
+        'success'
+      );
     }
   };
 
