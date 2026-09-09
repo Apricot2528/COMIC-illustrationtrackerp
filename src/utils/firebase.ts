@@ -7,6 +7,25 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
 export const auth = getAuth();
 
+/**
+ * Firestore は値が undefined のフィールドを受け付けず、書き込み時に例外を投げる
+ * （Unsupported field value: undefined）。任意項目を持つオブジェクトをそのまま
+ * 渡すと落ちるため、書き込み直前に取り除く。
+ */
+export function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefined(v)) as unknown as T;
+  }
+  if (value && typeof value === 'object' && (value as object).constructor === Object) {
+    const out: Record<string, unknown> = {};
+    Object.entries(value as Record<string, unknown>).forEach(([k, v]) => {
+      if (v !== undefined) out[k] = stripUndefined(v);
+    });
+    return out as T;
+  }
+  return value;
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',

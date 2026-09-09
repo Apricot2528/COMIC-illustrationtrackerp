@@ -11,6 +11,29 @@ export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events'
 ];
 
+/** Google Calendar API が返した失敗。状況に応じた案内を出すために状態コードを持つ */
+export class CalendarApiError extends Error {
+  status: number;
+  detail: string;
+  constructor(status: number, detail: string) {
+    super(`Google Calendar Error (${status}): ${detail}`);
+    this.name = 'CalendarApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+/** 失効・削除済みなど、状況から利用者向けの一文をつくる */
+export function describeCalendarError(err: unknown): string {
+  if (err instanceof CalendarApiError) {
+    if (err.status === 401) return 'Googleカレンダーの接続期限が切れています。設定から接続し直してください';
+    if (err.status === 403) return 'Googleカレンダーへの権限が足りません。設定から接続し直して、カレンダーの利用を許可してください';
+    if (err.status === 404) return '対象のカレンダーまたは予定が見つかりません。設定のカレンダーIDをご確認ください';
+    return `Googleカレンダーが登録を拒否しました（${err.status}）: ${err.detail}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Base helper for Google Calendar REST calls
  */
@@ -38,7 +61,13 @@ async function callCalendarApi(
   if (!response.ok) {
     const errorText = await response.text();
     console.error(`Google Calendar API Error [${response.status}]:`, errorText);
-    throw new Error(`Google Calendar Error: ${response.statusText} (${response.status})`);
+    let detail = errorText;
+    try {
+      detail = JSON.parse(errorText)?.error?.message || errorText;
+    } catch {
+      /* JSON でなければ本文をそのまま使う */
+    }
+    throw new CalendarApiError(response.status, detail);
   }
 
   if (method === 'DELETE') {
@@ -119,8 +148,8 @@ export async function syncDeadlineToGoogleCalendar(
       return res.id;
     }
   } catch (error) {
-    console.error('Failed to sync deadline to Google Calendar', error);
-    return undefined;
+    console.error('Failed to sync to Google Calendar', error);
+    throw error;
   }
 }
 
@@ -181,8 +210,8 @@ export async function syncMeetingToGoogleCalendar(
       return res.id;
     }
   } catch (error) {
-    console.error('Failed to sync meeting to Google Calendar', error);
-    return undefined;
+    console.error('Failed to sync to Google Calendar', error);
+    throw error;
   }
 }
 
@@ -268,7 +297,7 @@ export async function syncTodoToGoogleCalendar(
       return res.id;
     }
   } catch (error) {
-    console.error('Failed to sync todo to Google Calendar', error);
-    return undefined;
+    console.error('Failed to sync to Google Calendar', error);
+    throw error;
   }
 }

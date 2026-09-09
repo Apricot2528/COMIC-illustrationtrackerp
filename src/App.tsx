@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Task, ThemeConfig, CalendarSettings, DepositStatus, PlacedSticker, CustomStyleConfig } from './types';
 import { THEMES } from './data/themes';
-import { syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar, CALENDAR_SCOPES } from './utils/calendar';
+import { syncDeadlineToGoogleCalendar, syncMeetingToGoogleCalendar, deleteEventFromGoogleCalendar, syncTodoToGoogleCalendar, CALENDAR_SCOPES, describeCalendarError } from './utils/calendar';
 import ProgressTable from './components/ProgressTable';
 import CalendarPanel from './components/CalendarPanel';
 import { HeaderClock } from './components/HeaderClock';
@@ -16,7 +16,7 @@ import { Todo } from './types';
 // Firebase authentication and storage engine
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, where, onSnapshot, getDocs, getDoc, setDoc, deleteDoc, doc } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from './utils/firebase';
+import { auth, db, handleFirestoreError, OperationType, stripUndefined } from './utils/firebase';
 import { toast } from './utils/toast';
 
 // モーダル類とステッカー層は初期表示に不要なので遅延読み込みにする
@@ -236,7 +236,7 @@ export default function App() {
       // 追加・変更のあったステッカーのみ書き込む
       for (const sticker of updated) {
         if (previous.get(sticker.id) === next.get(sticker.id)) continue;
-        await setDoc(doc(db, 'stickers', sticker.id), { ...sticker, userId: currentUser.uid });
+        await setDoc(doc(db, 'stickers', sticker.id), stripUndefined({ ...sticker, userId: currentUser.uid }));
       }
 
       persistedStickersRef.current = next;
@@ -566,7 +566,7 @@ export default function App() {
                   meetingDate: task.meetingDate || '',
                   updatedAt: task.updatedAt || new Date().toISOString()
                 };
-                await setDoc(taskDocRef, healedTask);
+                await setDoc(taskDocRef, stripUndefined(healedTask));
                 migratedTasksCount++;
                 hasMigratedAny = true;
                 migratedTasks.push(healedTask);
@@ -615,7 +615,7 @@ export default function App() {
                   userId: user.uid,
                   updatedAt: todo.updatedAt || new Date().toISOString()
                 };
-                await setDoc(todoDocRef, healedTodo);
+                await setDoc(todoDocRef, stripUndefined(healedTodo));
                 migratedTodosCount++;
                 hasMigratedAny = true;
                 migratedTodos.push(healedTodo);
@@ -665,7 +665,7 @@ export default function App() {
                   containerId: sticker.containerId || 'default',
                   userId: user.uid
                 };
-                await setDoc(stickerDocRef, healedSticker);
+                await setDoc(stickerDocRef, stripUndefined(healedSticker));
                 migratedStickersCount++;
                 hasMigratedAny = true;
                 migratedStickers.push(healedSticker);
@@ -701,12 +701,12 @@ export default function App() {
 
           const activeThemeObject = THEMES.find(t => t.id === activeThemeId) || activeTheme;
 
-          await setDoc(configDocRef, {
+          await setDoc(configDocRef, stripUndefined({
             userId: user.uid,
             customStyle: customStyleParsed,
             activeThemeId,
             calendarSettings: stripToken(calendarSettingsParsed)
-          });
+          }));
 
           // Instantly update states to reflect local preference config
           setCustomStyle(prev => ({ ...prev, ...customStyleParsed }));
@@ -849,12 +849,12 @@ export default function App() {
       // 「マージ後のドキュメント」なので、既存ドキュメントに対してなら
       // 差分だけ送っても検証を通る。まだ作られていない時だけ全体を書く。
       if (!userConfigExistsRef.current) {
-        await setDoc(configDocRef, {
+        await setDoc(configDocRef, stripUndefined({
           userId: user.uid,
           customStyle: style || customStyle,
           activeThemeId: themeId || activeTheme.id,
           calendarSettings: stripToken(calSettings || calendarSettings)
-        }, { merge: true });
+        }), { merge: true });
         userConfigExistsRef.current = true;
         return;
       }
@@ -869,7 +869,7 @@ export default function App() {
       // userId しか無い＝更新対象が無い
       if (Object.keys(payload).length === 1) return;
 
-      await setDoc(configDocRef, payload, { merge: true });
+      await setDoc(configDocRef, stripUndefined(payload), { merge: true });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `userConfigs/${user.uid}`);
     }
@@ -951,7 +951,7 @@ export default function App() {
       const targetTask = updated.find(t => t.id === taskId);
       if (targetTask) {
         try {
-          await setDoc(doc(db, 'tasks', taskId), { ...targetTask, userId: user.uid });
+          await setDoc(doc(db, 'tasks', taskId), stripUndefined({ ...targetTask, userId: user.uid }));
         } catch (e) {
           handleFirestoreError(e, OperationType.UPDATE, `tasks/${taskId}`);
         }
@@ -1034,7 +1034,7 @@ export default function App() {
     // Save to Cloud Firestore if logged in
     if (user) {
       try {
-        await setDoc(doc(db, 'tasks', savedTask.id), { ...savedTask, userId: user.uid });
+        await setDoc(doc(db, 'tasks', savedTask.id), stripUndefined({ ...savedTask, userId: user.uid }));
       } catch (e) {
         handleFirestoreError(e, isNew ? OperationType.CREATE : OperationType.UPDATE, `tasks/${savedTask.id}`);
       }
@@ -1094,13 +1094,17 @@ export default function App() {
       setTasks(finalTasks);
       localStorage.setItem(LOCAL_STORAGE_TASKS_KEY, JSON.stringify(finalTasks));
 
+      // ここから先はクラウド保存。カレンダー登録はもう済んでいるので、
+      // 失敗しても「カレンダーに登録できなかった」とは言わないこと。
       if (user) {
         const targetTask = finalTasks.find(t => t.id === task.id);
         if (targetTask) {
           try {
-            await setDoc(doc(db, 'tasks', task.id), { ...targetTask, userId: user.uid });
+            await setDoc(doc(db, 'tasks', task.id), stripUndefined({ ...targetTask, userId: user.uid }));
           } catch (e) {
-            handleFirestoreError(e, OperationType.UPDATE, `tasks/${task.id}`);
+            console.error('Failed to save calendar event ids to Firestore', e);
+            toast('カレンダーには登録しましたが、クラウドへの保存に失敗しました', 'error');
+            return;
           }
         }
       }
@@ -1108,7 +1112,7 @@ export default function App() {
       toast('Googleカレンダーへの登録・同期が完了しました', 'success');
     } catch (err) {
       console.error(err);
-      toast('Googleカレンダーの登録に一部失敗しました。設定からログインし直してください', 'error');
+      toast(describeCalendarError(err), 'error');
     }
   };
 
@@ -1192,6 +1196,7 @@ export default function App() {
         }
       } catch (err) {
         console.error('Failed to sync todo to Google Calendar during creation', err);
+        toast('TODOは追加しますが、' + describeCalendarError(err), 'error');
       }
     }
 
@@ -1201,7 +1206,7 @@ export default function App() {
 
     if (user) {
       try {
-        await setDoc(doc(db, 'todos', finalTodo.id), { ...finalTodo, userId: user.uid });
+        await setDoc(doc(db, 'todos', finalTodo.id), stripUndefined({ ...finalTodo, userId: user.uid }));
       } catch (e) {
         handleFirestoreError(e, OperationType.CREATE, `todos/${finalTodo.id}`);
       }
@@ -1228,7 +1233,7 @@ export default function App() {
       const targetTodo = updated.find(t => t.id === todoId);
       if (targetTodo) {
         try {
-          await setDoc(doc(db, 'todos', todoId), { ...targetTodo, userId: user.uid });
+          await setDoc(doc(db, 'todos', todoId), stripUndefined({ ...targetTodo, userId: user.uid }));
         } catch (e) {
           handleFirestoreError(e, OperationType.UPDATE, `todos/${todoId}`);
         }
@@ -1284,9 +1289,11 @@ export default function App() {
           const targetTodo = updated.find(t => t.id === todo.id);
           if (targetTodo) {
             try {
-              await setDoc(doc(db, 'todos', todo.id), { ...targetTodo, userId: user.uid });
+              await setDoc(doc(db, 'todos', todo.id), stripUndefined({ ...targetTodo, userId: user.uid }));
             } catch (e) {
-              handleFirestoreError(e, OperationType.UPDATE, `todos/${todo.id}`);
+              console.error('Failed to save todo event id to Firestore', e);
+              toast('カレンダーには登録しましたが、クラウドへの保存に失敗しました', 'error');
+              return;
             }
           }
         }
@@ -1294,7 +1301,8 @@ export default function App() {
         toast('TODOをGoogleカレンダーに登録しました', 'success');
       }
     } catch (e) {
-      toast('カレンダーへの登録に失敗しました', 'error');
+      console.error(e);
+      toast(describeCalendarError(e), 'error');
     }
   };
 
