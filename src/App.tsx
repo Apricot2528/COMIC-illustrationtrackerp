@@ -18,6 +18,7 @@ import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User 
 import { collection, query, where, onSnapshot, getDocs, getDoc, setDoc, deleteDoc, doc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType, stripUndefined } from './utils/firebase';
 import { toast } from './utils/toast';
+import { requestAccessToken } from './utils/googleToken';
 
 // モーダル類とステッカー層は初期表示に不要なので遅延読み込みにする
 const SettingModal = lazy(() => import('./components/SettingModal'));
@@ -28,6 +29,23 @@ const LOCAL_STORAGE_TASKS_KEY = 'manga_illust_tasks_v1';
 const LOCAL_STORAGE_TODOS_KEY = 'manga_illust_todos_v1';
 const LOCAL_STORAGE_THEME_KEY = 'manga_illust_theme_id_v1';
 const LOCAL_STORAGE_CAL_KEY = 'manga_illust_calendar_v1';
+
+// Firebase Auth が使っているウェブクライアント。GIS の無言更新も同じ ID を使う
+// 必要がある（別 ID だと「同意済み」と見なされず、毎回更新に失敗する）。
+const GOOGLE_OAUTH_CLIENT_ID =
+  '487620770059-v159li20cqrr0rd5hacmt7og2skhorsh.apps.googleusercontent.com';
+
+// 別プロジェクトの ID が既定値として保存されていた時期があるため、
+// 保存済みの設定に見つけたら現行の ID に差し替える。
+const OBSOLETE_CLIENT_IDS = [
+  '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
+];
+
+/** 保存されていたクライアント ID を、使える値に正す */
+function normalizeClientId(stored?: string | null): string {
+  if (!stored || OBSOLETE_CLIENT_IDS.includes(stored)) return GOOGLE_OAUTH_CLIENT_ID;
+  return stored;
+}
 
 // アクセストークンは端末の localStorage にだけ置き、Firestore には保存しない
 const stripToken = (cs: CalendarSettings): CalendarSettings => ({ ...cs, accessToken: null, tokenExpiry: null });
@@ -114,7 +132,7 @@ export default function App() {
   const [activeTheme, setActiveTheme] = useState<ThemeConfig>(THEMES[0]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [calendarSettings, setCalendarSettings] = useState<CalendarSettings>({
-    clientId: '210301309790-kg0bm152ltql8qadr0dmtr4srmcukdsa.apps.googleusercontent.com',
+    clientId: GOOGLE_OAUTH_CLIENT_ID,
     apiKey: '',
     calendarId: 'primary',
     accessToken: null,
@@ -132,7 +150,7 @@ export default function App() {
       const parsed = JSON.parse(stored);
       setCalendarSettings((prev) => ({
         ...prev,
-        clientId: parsed.clientId || prev.clientId,
+        clientId: normalizeClientId(parsed.clientId),
         apiKey: parsed.apiKey || '',
         calendarId: parsed.calendarId || 'primary',
         accessToken: parsed.accessToken || null,
@@ -143,7 +161,53 @@ export default function App() {
     }
   }, []);
 
+  // 非同期処理の途中で最新の設定を参照するための控え
+  const calendarSettingsRef = useRef(calendarSettings);
+  calendarSettingsRef.current = calendarSettings;
+
+  /** 取得したアクセストークンを state と localStorage の両方へ反映する */
+  const applyAccessToken = useCallback((accessToken: string, expiresAt: number) => {
+    const updated: CalendarSettings = {
+      ...calendarSettingsRef.current,
+      accessToken,
+      tokenExpiry: expiresAt,
+    };
+    calendarSettingsRef.current = updated;
+    setCalendarSettings(updated);
+    localStorage.setItem(LOCAL_STORAGE_CAL_KEY, JSON.stringify(updated));
+  }, []);
+
+  /**
+   * ポップアップを出さずにトークンを取り直す。
+   * Google のセッションが生きていて同意済みなら成功する。
+   */
+  const refreshTokenSilently = useCallback(async (): Promise<string | null> => {
+    const current = calendarSettingsRef.current;
+    if (!current.clientId) return null;
+    const result = await requestAccessToken({
+      clientId: current.clientId,
+      scope: CALENDAR_SCOPES.join(' '),
+      silent: true,
+      hint: auth.currentUser?.email || undefined,
+    });
+    if (!result) return null;
+    applyAccessToken(result.accessToken, result.expiresAt);
+    return result.accessToken;
+  }, [applyAccessToken]);
+
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  // 失効の5分前に裏で取り直しておく。開きっぱなしでも接続が切れないようにする。
+  useEffect(() => {
+    const { accessToken, tokenExpiry } = calendarSettings;
+    if (!accessToken || !tokenExpiry) return;
+    const LEAD_MS = 5 * 60 * 1000;
+    const delay = Math.max(0, tokenExpiry - Date.now() - LEAD_MS);
+    const timer = window.setTimeout(() => {
+      void refreshTokenSilently();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [calendarSettings.accessToken, calendarSettings.tokenExpiry, refreshTokenSilently]);
+
   const [isSettingModalOpen, setIsSettingModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'manga' | 'illust'>('all');
@@ -813,8 +877,16 @@ export default function App() {
 
   // 有効なアクセストークンを返す。期限切れならポップアップで取り直す。
   const ensureCalendarToken = async (): Promise<string | null> => {
-    const valid = calendarSettings.accessToken && calendarSettings.tokenExpiry && calendarSettings.tokenExpiry > Date.now() + 60 * 1000;
-    if (valid) return calendarSettings.accessToken;
+    const current = calendarSettingsRef.current;
+    const valid =
+      current.accessToken && current.tokenExpiry && current.tokenExpiry > Date.now() + 60 * 1000;
+    if (valid) return current.accessToken;
+
+    // まずポップアップなしで取り直す
+    const silent = await refreshTokenSilently();
+    if (silent) return silent;
+
+    // それでも駄目な場合だけポップアップに切り替える
     return await connectGoogle(true);
   };
 
@@ -1721,6 +1793,7 @@ export default function App() {
                 calendarSettings={calendarSettings}
                 onSelectTaskId={setSelectedTaskId}
                 onConnect={handleGoogleSignIn}
+                onRefreshToken={refreshTokenSilently}
               />
             </section>
 

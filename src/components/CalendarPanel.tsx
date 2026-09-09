@@ -13,6 +13,8 @@ interface CalendarPanelProps {
   calendarSettings: CalendarSettings;
   onSelectTaskId?: (taskId: string) => void;
   onConnect?: () => void;
+  /** 期限切れのときに新しいトークンを取り直す。取れなければ null */
+  onRefreshToken?: () => Promise<string | null>;
 }
 
 /** この画面で扱う予定の1件 */
@@ -50,6 +52,7 @@ export default function CalendarPanel({
   calendarSettings,
   onSelectTaskId,
   onConnect,
+  onRefreshToken,
 }: CalendarPanelProps) {
   const [googleEvents, setGoogleEvents] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -91,14 +94,22 @@ export default function CalendarPanel({
           orderBy: 'startTime',
           singleEvents: 'true',
         });
-        const res = await fetch(
-          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
-          { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
-        );
+        const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params}`;
+        const call = (bearer: string) =>
+          fetch(url, { headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json' } });
+
+        let res = await call(token);
+
+        // 期限切れなら一度だけ取り直して再試行する
+        if (res.status === 401 && onRefreshToken) {
+          const fresh = await onRefreshToken();
+          if (fresh) res = await call(fresh);
+        }
+
         if (!res.ok) {
           throw new Error(
             res.status === 401
-              ? '認証の期限が切れています。設定から接続し直してください'
+              ? '接続の期限が切れています。設定から接続し直してください'
               : `取得に失敗しました（${res.status}）`
           );
         }
@@ -115,7 +126,7 @@ export default function CalendarPanel({
     return () => {
       cancelled = true;
     };
-  }, [token, calendarId, monthKey, monthStart, monthEnd]);
+  }, [token, calendarId, monthKey, monthStart, monthEnd, onRefreshToken]);
 
   const reload = () => setViewMonth(new Date(viewMonth));
 
